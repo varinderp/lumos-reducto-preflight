@@ -1,13 +1,17 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
+import { APP_BASE_PATH, appPath } from "@/lib/app-path";
 import "./globals.css";
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
-  const host = requestHeaders.get("host") ?? "localhost:3000";
+  const forwardedHost = requestHeaders.get("x-forwarded-host")?.split(",")[0]?.trim();
+  const host = forwardedHost || requestHeaders.get("host") || "localhost:3000";
   const forwardedProtocol = requestHeaders.get("x-forwarded-proto");
   const protocol = forwardedProtocol ?? (host.startsWith("localhost") ? "http" : "https");
-  const imageUrl = new URL("/og.png", `${protocol}://${host}`).toString();
+  const origin = `${protocol}://${host}`;
+  const imageUrl = new URL(appPath("/og.png"), origin).toString();
+  const canonicalUrl = new URL(APP_BASE_PATH || "/", origin).toString();
   const title = "Lumos — Reducto cost preflight";
   const description =
     "Estimate Reducto pipeline costs and enforce a budget before document processing begins.";
@@ -15,6 +19,8 @@ export async function generateMetadata(): Promise<Metadata> {
   return {
     title,
     description,
+    alternates: { canonical: canonicalUrl },
+    icons: { icon: appPath("/favicon.svg") },
     openGraph: {
       title,
       description,

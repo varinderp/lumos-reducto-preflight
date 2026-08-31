@@ -96,7 +96,7 @@ test("server-renders the Lumos simulator and API", async () => {
   assert.match(html, /Reducto turns unstructured documents into structured, usable data/);
   assert.match(html, /amount of work, the endpoints and configurations used/);
   assert.match(html, /help teams use resources more efficiently and transparently/);
-  assert.match(html, /href="\/waiver\.png"/);
+  assert.match(html, /href="\/waiver-redacted\.png"/);
   assert.match(html, /<strong>protect budgets<\/strong>/);
   assert.match(html, /<sup class="evidence-marker">1<\/sup>/);
   assert.match(html, /aria-describedby="budget-evidence-note"/);
@@ -230,7 +230,7 @@ test("server-renders the Lumos simulator and API", async () => {
   assert.doesNotMatch(html, /Apply a pipeline configuration to generate the request and response/);
   assert.doesNotMatch(html, /<button[^>]*>\s*Copy Lumos profile\s*<\/button>/);
   assert.doesNotMatch(html, /View this simulator(?:&#x27;|&apos;|’|')s API request and response/);
-  assert.match(html, /<h3><code>POST \/api\/estimate<\/code><\/h3>/);
+  assert.match(html, /<h3><code>POST (?:<!-- -->)?\/api\/estimate<\/code><\/h3>/);
   assert.doesNotMatch(html, /<h3>Configure once<\/h3>|<h3>For each upload<\/h3>|<h3>Handle the result<\/h3>/);
   assert.doesNotMatch(html, /Build or import the pricing configuration|Store that JSON in your application/);
   assert.match(html, /<th>Request field<\/th>[\s\S]*?<th>Use<\/th>/);
@@ -256,7 +256,7 @@ test("server-renders the Lumos simulator and API", async () => {
   assert.match(html, /Verify with Reducto/);
   assert.match(html, /Created by/);
   assert.match(html, /varindersaini\.com/);
-  assert.match(html, /v0\.1\.27/);
+  assert.match(html, /v0\.1\.28/);
   assert.doesNotMatch(html, />Paste Reducto JSON config</);
   assert.match(html, /<footer>[\s\S]*?Sources:/);
   assert.doesNotMatch(html, /<footer>[\s\S]*?Lumos uses Reducto/);
@@ -267,7 +267,8 @@ test("server-renders the Lumos simulator and API", async () => {
   assert.doesNotMatch(html, /Lumos cost profile, not a Reducto request body/);
   assert.doesNotMatch(html, /Lumos inputs, not Reducto request fields/);
   assert.doesNotMatch(html, /Your site is taking shape|codex-preview/);
-  await access(new URL("../public/waiver.png", import.meta.url));
+  await access(new URL("../public/waiver-redacted.png", import.meta.url));
+  await assert.rejects(access(new URL("../public/waiver.png", import.meta.url)));
 });
 
 test("pricing exports the ten public unit rates and keeps fixed rules separate", async () => {
@@ -580,8 +581,8 @@ test("source keeps the exact Solution copy and removes its predecessor", async (
   for (const fragment of REPLACED_SOLUTION_FRAGMENTS) {
     assert.equal(source.includes(fragment), false, fragment);
   }
-  assert.match(source, /href="\/reducto-lumos\.jpg"/);
-  assert.match(source, /src="\/reducto-lumos\.jpg"/);
+  assert.match(source, /href=\{appPath\("\/reducto-lumos\.jpg"\)\}/);
+  assert.match(source, /src=\{appPath\("\/reducto-lumos\.jpg"\)\}/);
 });
 
 test("budget evidence uses a numbered marker and note before Solution", async () => {
@@ -856,7 +857,7 @@ test("browser estimator derives processing mode from an applied pipeline", async
   assert.match(source, /aria-label=\{`Add another \$\{legend\}`\}/);
   assert.equal(source.match(/legend="Page Range"/g)?.length, 3);
   assert.doesNotMatch(source, /Shared pages to process|shares that range|using the selected Parse pages/);
-  assert.match(source, /<h3><code>POST \/api\/estimate<\/code><\/h3>/);
+  assert.match(source, /<h3><code>POST \{appPath\("\/api\/estimate"\)\}<\/code><\/h3>/);
   assert.doesNotMatch(source, /<h3>Configure once<\/h3>|<h3>For each upload<\/h3>|<h3>Handle the result<\/h3>/);
   const apiSectionSource = source.slice(
     source.indexOf('<section id="api">'),
@@ -890,7 +891,7 @@ test("browser estimator derives processing mode from an applied pipeline", async
   assert.match(copyProfileSource, /pipelineDraftState !== "applied"/);
   assert.match(copyProfileSource, /navigator\.clipboard\.writeText\(serializeLumosProfile\(pipeline\)\)/);
   assert.doesNotMatch(copyProfileSource, /apiRequest|documents|policy|appliedRates|reductoCode/);
-  const apiSample = source.slice(source.indexOf('fetch("/api/estimate"'));
+  const apiSample = source.slice(source.indexOf('fetch("${appPath("/api/estimate")}"'));
   const responseGuard = apiSample.indexOf("if (!response.ok)");
   const allowGate = apiSample.indexOf('if (estimate.decision !== "allow")');
   const paidRun = apiSample.indexOf("reducto.pipeline.run");
