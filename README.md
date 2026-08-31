@@ -81,8 +81,8 @@ applications should call this endpoint through an authenticated server.
 - The optional `/api/reducto` verification route sends real files, an API key,
   and a pipeline ID to Reducto only after explicit confirmation. It may incur
   Reducto charges. Protect it with authentication and rate limiting.
-- To deploy a fork with Sites, replace the placeholder project ID in
-  `.openai/hosting.json`. It is not needed for local development.
+- To deploy a fork with Sites, replace the project ID in
+  `.openai/hosting.json` with your own. It is not needed locally.
 
 ## Documentation
 
