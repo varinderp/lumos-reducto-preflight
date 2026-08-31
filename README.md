@@ -13,7 +13,6 @@ same pricing engine.
 - Builds a Lumos profile manually or from imported Reducto configuration JSON.
 - Returns low, likely, and high USD estimates with an
   `allow`, `review`, or `deny` policy decision.
-- Keeps custom simulator rates in the current browser session only.
 - Does not run Reducto or incur a Reducto fee when creating an estimate.
 
 ## Run locally
@@ -81,8 +80,6 @@ applications should call this endpoint through an authenticated server.
 - The optional `/api/reducto` verification route sends real files, an API key,
   and a pipeline ID to Reducto only after explicit confirmation. It may incur
   Reducto charges. Protect it with authentication and rate limiting.
-- To deploy a fork with Sites, replace the project ID in
-  `.openai/hosting.json` with your own. It is not needed locally.
 
 ## Documentation
 
