@@ -98,6 +98,16 @@ test("server-renders the Lumos simulator and API", async () => {
   assert.match(html, /help teams use resources more efficiently and transparently/);
   assert.match(html, /href="\/waiver\.png"/);
   assert.match(html, /<strong>protect budgets<\/strong>/);
+  assert.match(html, /<sup class="evidence-marker">1<\/sup>/);
+  assert.match(html, /aria-describedby="budget-evidence-note"/);
+  assert.match(
+    html,
+    /<p id="budget-evidence-note" class="evidence-footnote"><sup>1<\/sup> Actual screenshot from 2025 requesting a refund due to overusage\.<\/p>/,
+  );
+  assert.ok(
+    html.indexOf('id="budget-evidence-note"') < html.indexOf("<h2>Solution</h2>"),
+    "the screenshot note appears before Solution",
+  );
   assert.match(html, /aria-haspopup="dialog"/);
   assert.match(html, /id="budget-example"/);
   assert.match(html, /Unexpected usage and waiver request/);
@@ -246,7 +256,7 @@ test("server-renders the Lumos simulator and API", async () => {
   assert.match(html, /Verify with Reducto/);
   assert.match(html, /Created by/);
   assert.match(html, /varindersaini\.com/);
-  assert.match(html, /v0\.1\.26/);
+  assert.match(html, /v0\.1\.27/);
   assert.doesNotMatch(html, />Paste Reducto JSON config</);
   assert.match(html, /<footer>[\s\S]*?Sources:/);
   assert.doesNotMatch(html, /<footer>[\s\S]*?Lumos uses Reducto/);
@@ -572,6 +582,19 @@ test("source keeps the exact Solution copy and removes its predecessor", async (
   }
   assert.match(source, /href="\/reducto-lumos\.jpg"/);
   assert.match(source, /src="\/reducto-lumos\.jpg"/);
+});
+
+test("budget evidence uses a numbered marker and note before Solution", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+
+  assert.match(source, /<strong>protect budgets<\/strong>\s*<sup className="evidence-marker">1<\/sup>/);
+  assert.match(source, /aria-describedby="budget-evidence-note"/);
+  assert.ok(
+    source.indexOf('id="budget-evidence-note"') < source.indexOf("<h2>Solution</h2>"),
+  );
+  assert.match(styles, /\.evidence-marker\s*\{/);
+  assert.match(styles, /\.evidence-footnote\s*\{/);
 });
 
 test("rate-card source preserves drafts, accessibility, used marks, and API isolation", async () => {

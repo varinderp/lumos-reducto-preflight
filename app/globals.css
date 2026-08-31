@@ -43,6 +43,18 @@ nav { display: flex; flex-wrap: wrap; gap: 5px 15px; font-size: 15px; }
 a { color: var(--link); text-decoration: underline; text-underline-offset: 2px; }
 a:hover { color: #071f65; }
 .evidence-link { font-weight: bold; text-decoration-thickness: 1.5px; }
+.evidence-marker {
+  margin-left: 1px;
+  font-size: 0.65em;
+  line-height: 0;
+}
+.evidence-footnote {
+  margin: -4px 0 22px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.evidence-footnote sup { margin-right: 2px; }
 .image-preview {
   width: min(920px, calc(100vw - 28px));
   max-height: calc(100dvh - 28px);

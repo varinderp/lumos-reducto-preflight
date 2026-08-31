@@ -1085,6 +1085,7 @@ export default function Home() {
             href="/waiver.png"
             aria-haspopup="dialog"
             aria-controls="budget-example"
+            aria-describedby="budget-evidence-note"
             onClick={(event) => {
               const dialog = budgetPreview.current;
               if (dialog && typeof dialog.showModal === "function") {
@@ -1094,7 +1095,12 @@ export default function Home() {
             }}
           >
             <strong>protect budgets</strong>
+            <sup className="evidence-marker">1</sup>
           </a>{", and help teams use resources more efficiently and transparently."}
+        </p>
+
+        <p id="budget-evidence-note" className="evidence-footnote">
+          <sup>1</sup> Actual screenshot from 2025 requesting a refund due to overusage.
         </p>
 
         <dialog
