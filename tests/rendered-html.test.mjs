@@ -256,7 +256,7 @@ test("server-renders the Lumos simulator and API", async () => {
   assert.match(html, /Verify with Reducto/);
   assert.match(html, /Created by/);
   assert.match(html, /varindersaini\.com/);
-  assert.match(html, /v0\.1\.29/);
+  assert.match(html, /v0\.1\.30/);
   assert.doesNotMatch(html, />Paste Reducto JSON config</);
   assert.match(html, /<footer>[\s\S]*?Sources:/);
   assert.doesNotMatch(html, /<footer>[\s\S]*?Lumos uses Reducto/);

@@ -4,8 +4,7 @@ Lumos estimates the cost of a Reducto document-processing job before it runs.
 It includes a browser simulator and a `POST /api/estimate` endpoint that use the
 same pricing engine.
 
-[Hosted demo](https://lumos-reducto-preflight.varinder.chatgpt.site/)
-(access-controlled)
+[Hosted demo](https://varindersaini.com/projects/lumos)
 
 ## What it does
 
