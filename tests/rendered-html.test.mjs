@@ -170,6 +170,8 @@ test("server-renders the Lumos simulator and API", async () => {
     /The simulator keeps your files and estimates|Spreadsheet calculations are currently unsupported/,
   );
   assert.match(html, /Awaiting documents/);
+  assert.match(html, />or try an example</);
+  assert.doesNotMatch(html, /Load 15-document example/);
   assert.match(html, /<h3>4\. Estimate<\/h3>[\s\S]*?Apply a pipeline configuration to estimate these documents/);
   assert.doesNotMatch(html, /Default rate card \(custom\)/);
   const policyStart = simulatorHtml.indexOf("<h3>3. Policy</h3>");
@@ -236,7 +238,7 @@ test("server-renders the Lumos simulator and API", async () => {
   assert.match(html, /<th>Request field<\/th>[\s\S]*?<th>Use<\/th>/);
   assert.match(
     html,
-    /<code>documents<\/code>[\s\S]*?Required\. An array of document metadata\.[\s\S]*?original filename[\s\S]*?<code>name<\/code>[\s\S]*?page count[\s\S]*?<code>pages<\/code>[\s\S]*?Do not send file contents\.[\s\S]*?<\/tr>/i,
+    /<code>documents<\/code>[\s\S]*?Required\. An array of document <strong>metadata<\/strong> \(<code>name<\/code>, <code>pages<\/code>\)\.\s*Do not send file contents\.[\s\S]*?<\/tr>/i,
   );
   assert.match(
     html,
@@ -250,13 +252,13 @@ test("server-renders the Lumos simulator and API", async () => {
   assert.doesNotMatch(html, /Required\. The copied Lumos profile, stored by your application\./);
   assert.match(html, /const documents = \[[\s\S]*?name: &quot;agreement\.pdf&quot;,[\s\S]*?pages: 42/);
   assert.match(html, /const pipeline = await loadSavedLumosProfile\(\)/);
-  assert.match(html, /Lumos receives metadata, not files/i);
+  assert.doesNotMatch(html, /Lumos receives metadata, not files/i);
   assert.match(html, /estimate[\s\S]*?breakdown[\s\S]*?usage[\s\S]*?<code>allow<\/code>[\s\S]*?<code>review<\/code>[\s\S]*?<code>deny<\/code>/i);
   assert.match(html, /authenticated server-to-server integration/);
   assert.match(html, /Verify with Reducto/);
   assert.match(html, /Created by/);
   assert.match(html, /varindersaini\.com/);
-  assert.match(html, /v0\.1\.30/);
+  assert.match(html, /v0\.1\.31/);
   assert.doesNotMatch(html, />Paste Reducto JSON config</);
   assert.match(html, /<footer>[\s\S]*?Sources:/);
   assert.doesNotMatch(html, /<footer>[\s\S]*?Lumos uses Reducto/);
@@ -863,10 +865,10 @@ test("browser estimator derives processing mode from an applied pipeline", async
     source.indexOf('<section id="api">'),
     source.indexOf('<section id="verify">'),
   );
-  assert.match(source, /Lumos receives metadata, not files/);
+  assert.doesNotMatch(source, /Lumos receives metadata, not files/);
   assert.match(
     apiSectionSource,
-    /Required\. An array of document metadata\.[\s\S]*?original filename[\s\S]*?<code>name<\/code>[\s\S]*?page count[\s\S]*?<code>pages<\/code>[\s\S]*?Do not send file contents\./i,
+    /Required\. An array of document <strong>metadata<\/strong> \(<code>name<\/code>, <code>pages<\/code>\)\.\s*Do not send file contents\./i,
   );
   assert.match(
     apiSectionSource,
@@ -1008,6 +1010,153 @@ test("simulator gates estimates on an applied pipeline and clear restores unconf
     /documents\.length > 0 \|\| pipelineDraftState !== "unconfigured"/,
   );
   assert.match(source, /setPipelineDraftState\("applied"\)/);
+});
+
+test("one-click example loads the complete request and exact public-rate estimate", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const { SIMULATOR_EXAMPLE_REQUEST } = await importTypeScriptModule(
+    "../lib/simulator-example.ts",
+  );
+  const { DEFAULT_PRICING_UNIT_RATES, estimatePipeline, normalizeRequest } =
+    await importTypeScriptModule("../lib/pricing.ts");
+  const { manualDraftToPipeline, pipelineToManualDraft } =
+    await importTypeScriptModule("../lib/manual-pipeline.ts");
+  const { serializeLumosProfile } =
+    await importTypeScriptModule("../lib/profile-copy.ts");
+
+  assert.deepEqual(SIMULATOR_EXAMPLE_REQUEST.documents, [
+    { name: "data-room-01.pdf", pages: 100 },
+    { name: "data-room-02.pdf", pages: 1_000 },
+    { name: "data-room-03.pdf", pages: 100 },
+    { name: "data-room-04.pdf", pages: 100 },
+    { name: "data-room-05.pdf", pages: 1_000 },
+  ]);
+  assert.equal(SIMULATOR_EXAMPLE_REQUEST.policy.max_total_usd, 100);
+  assert.deepEqual(SIMULATOR_EXAMPLE_REQUEST.pipeline, {
+    parse: null,
+    classify: { page_range: { start: 1, end: 3 } },
+    extract: {
+      settings: {
+        deep_extract: false,
+        optimize_for_latency: true,
+        include_images: false,
+        page_range: { start: 1, end: 5 },
+      },
+    },
+    split: {
+      settings: { deep_split: true },
+      parsing: { settings: { page_range: { start: 6, end: 8 } } },
+    },
+    edit: {},
+    lumos_assumptions: {
+      conditional_extract_routing: true,
+      likely_deep_extract_share: 0.4,
+      estimated_extract_fields_per_page: 12,
+      known_fully_prefilled_edit_pages: 20,
+    },
+  });
+
+  const estimate = estimatePipeline(
+    normalizeRequest(SIMULATOR_EXAMPLE_REQUEST),
+    DEFAULT_PRICING_UNIT_RATES,
+  );
+  assert.equal(estimate.totalPages, 2_300);
+  assert.equal(estimate.classifyPages, 15);
+  assertClose(estimate.classifyCost, 0.1125, "example Classify subtotal");
+  assert.equal(estimate.extractPages, 25);
+  assertClose(estimate.extractLow, 1, "example Extract low");
+  assertClose(estimate.extractLikely, 1.4, "example Extract likely");
+  assertClose(estimate.extractHigh, 2, "example Extract high");
+  assert.equal(estimate.splitPages, 15);
+  assertClose(estimate.splitCost, 0.6, "example Split subtotal");
+  assertClose(estimate.editCost, 137.1, "example Edit subtotal");
+  assertClose(estimate.low, 138.8125, "example low estimate");
+  assertClose(estimate.likely, 139.2125, "example likely estimate");
+  assertClose(estimate.high, 139.8125, "example high estimate");
+  assert.equal(estimate.estimateComplete, true);
+  assert.deepEqual(estimate.unpricedCostFactors, []);
+  assert.equal(estimate.decision, "deny");
+
+  const hydratedDraft = pipelineToManualDraft(SIMULATOR_EXAMPLE_REQUEST.pipeline);
+  assert.equal(hydratedDraft.classify.enabled, true);
+  assert.equal(hydratedDraft.classify.start, "1");
+  assert.equal(hydratedDraft.classify.end, "3");
+  assert.equal(hydratedDraft.extract.mode, "conditional");
+  assert.equal(hydratedDraft.extract.optimizeForLatency, true);
+  assert.equal(hydratedDraft.extract.includeImages, false);
+  assert.deepEqual(hydratedDraft.extract.pageSelection.ranges[0], {
+    id: "extract-page-range-1",
+    start: "1",
+    end: "5",
+  });
+  assert.equal(hydratedDraft.split.mode, "deep");
+  assert.deepEqual(hydratedDraft.split.pageSelection.ranges[0], {
+    id: "split-page-range-1",
+    start: "6",
+    end: "8",
+  });
+  assert.equal(hydratedDraft.edit.enabled, true);
+  assert.equal(hydratedDraft.edit.fullyPrefilledPages, "20");
+  assert.equal(hydratedDraft.assumptions.deepSharePercent, "40");
+  assert.equal(hydratedDraft.assumptions.extractFieldsPerPage, "12");
+
+  const reapplied = manualDraftToPipeline(hydratedDraft, 2_300);
+  assert.equal(reapplied.ok, true);
+  assert.deepEqual(reapplied.pipeline, SIMULATOR_EXAMPLE_REQUEST.pipeline);
+
+  const copiedProfile = serializeLumosProfile(SIMULATOR_EXAMPLE_REQUEST.pipeline);
+  assert.deepEqual(JSON.parse(copiedProfile), SIMULATOR_EXAMPLE_REQUEST.pipeline);
+  assert.doesNotMatch(copiedProfile, /documents|max_total_usd|rate_card|pricing_unit_rates/);
+
+  const apiResponse = await request("/api/estimate", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(SIMULATOR_EXAMPLE_REQUEST),
+  });
+  assert.equal(apiResponse.status, 200);
+  const apiResult = await apiResponse.json();
+  assert.deepEqual(apiResult.estimate, {
+    low_usd: 138.8125,
+    likely_usd: 139.2125,
+    high_usd: 139.8125,
+    currency: "USD",
+  });
+  assert.equal(apiResult.breakdown.classify_usd, 0.1125);
+  assert.equal(apiResult.breakdown.extract_low_usd, 1);
+  assert.equal(apiResult.breakdown.extract_likely_usd, 1.4);
+  assert.equal(apiResult.breakdown.extract_high_usd, 2);
+  assert.equal(apiResult.breakdown.split_usd, 0.6);
+  assert.equal(apiResult.breakdown.edit_usd, 137.1);
+  assert.equal(apiResult.usage.documents, 5);
+  assert.equal(apiResult.usage.pages, 2_300);
+  assert.equal(apiResult.usage.classify_pages_priced, 15);
+  assert.equal(apiResult.usage.extract_pages_priced, 25);
+  assert.equal(apiResult.usage.split_pages_priced, 15);
+  assert.equal(apiResult.estimate_complete, true);
+  assert.equal(apiResult.decision, "deny");
+
+  const loaderSource = source.slice(
+    source.indexOf("function loadSimulatorExample()"),
+    source.indexOf("function clearSession()"),
+  );
+  assert.match(loaderSource, /setDocuments\(makeExampleDocuments\(\)\)/);
+  assert.match(loaderSource, /pipelineToManualDraft\(examplePipeline\)/);
+  assert.match(loaderSource, /setPipelineDraftState\("applied"\)/);
+  assert.match(loaderSource, /setBudget\(SIMULATOR_EXAMPLE_REQUEST\.policy\.max_total_usd\)/);
+  assert.match(loaderSource, /setPipelineInputTab\("profile"\)/);
+  assert.match(loaderSource, /setReductoCode\(""\)/);
+  assert.match(loaderSource, /setImportApplied\(false\)/);
+  assert.match(loaderSource, /setProfileCopyState\("idle"\)/);
+  assert.match(loaderSource, /setLiveResult\(null\)/);
+  assert.match(loaderSource, /setAppliedRates\(\{ \.\.\.DEFAULT_PRICING_UNIT_RATES \}\)/);
+  assert.match(loaderSource, /setAppliedRateDraft\(defaultRateDraft\)/);
+  assert.match(loaderSource, /setRateDraft\(defaultRateDraft\)/);
+  assert.doesNotMatch(
+    JSON.stringify(SIMULATOR_EXAMPLE_REQUEST),
+    /appliedRates|rateDraft|pricing_unit_rates|rate_card|api_key|pipeline_id/,
+  );
+  assert.match(source, /onClick=\{loadSimulatorExample\}[\s\S]*?or try an example/);
+  assert.doesNotMatch(source, /DEMO_PAGES|makeDemoDocuments|Load 15-document example/);
 });
 
 test("simulator cleanup keeps the policy, profile, and API preview states explicit", async () => {
