@@ -149,13 +149,14 @@ state through the existing live status without a second ready-to-apply sentence.
 
 ## 5. Public rate-card snapshot
 
-Lumos uses the published list rates scheduled to take effect September 1, 2026:
+Lumos uses the published list rates effective September 1, 2026:
 
 | Product | Published list rate |
 | --- | ---: |
-| Parse, Standard page | $15 / 1,000 pages |
-| Parse, Complex page | $30 / 1,000 pages |
-| Parse, agentic mode | 2× the applicable page rate |
+| Parse, Legacy Standard page | $15 / 1,000 pages |
+| Parse, Legacy Complex page | $30 / 1,000 pages |
+| Parse, Legacy agentic mode | 2× the applicable page rate |
+| Parse, r‑1 Beta | $10 / 1,000 pages |
 | Advanced Chart Agent | $0.06 per detected chart |
 | Batch Parse | 20% usage discount on `/parse_async` with `queue_priority: "batch"` |
 | Extract | $20 / 1,000 pages, parsing included |
@@ -167,6 +168,9 @@ Lumos uses the published list rates scheduled to take effect September 1, 2026:
 | Edit | $60 / 1,000 pages |
 | Edit, fully prefilled page | $15 / 1,000 pages |
 
+Legacy and non-Parse responses retain `reducto-public-2026-09-01`. An explicit
+standalone r‑1 estimate returns `reducto-public-2026-09-01-r1-beta`.
+
 Contract pricing may differ. The customer's contract and rate card remain the
 source of truth.
 
@@ -174,7 +178,7 @@ source of truth.
 
 The **Default rate card** or **Default rate card (custom)** link sits in **3.
 Policy** beside the **Maximum cost, USD** control and opens an on-demand dialog
-with all ten numeric unit prices. **4. Estimate** does not repeat the link, and
+with all eleven numeric unit prices. **4. Estimate** does not repeat the link, and
 the configuration footer contains only **Apply configuration**. Page prices
 are edited as dollars per 1,000 pages, while Advanced Chart Agent is edited as
 dollars per detected chart. The dialog marks the rates selected by the current
@@ -193,7 +197,15 @@ active.
 
 ### Supported boundaries
 
-- Legacy pricing is not supported.
+- Legacy Parse remains the default at the current Standard/Complex rates. The
+  pre-September 1 credit-based pricing model is not supported.
+- r‑1 Parse is an opt-in Beta model for standalone Parse. It is priced at $10
+  per 1,000 processed pages and supports page ranges plus the Batch Parse
+  discount. Legacy Complex-page and Agentic multipliers do not apply to r‑1.
+  r‑1 custom prompts, OCR return, and Advanced Chart retain the known base
+  subtotal but make the estimate incomplete until their add-on pricing is
+  modeled. Promptless Agentic scopes are rejected for r‑1 with guidance to
+  remove them or choose Legacy.
 - Extract profiles at 100 estimated fields per page are supported. Above 100,
   Lumos preserves the known page estimate and marks the unpublished dense-field
   surcharge as incomplete.
@@ -343,10 +355,13 @@ order does not define pipeline execution order.
 Redundant settings subheadings are omitted. Estimator-owned values appear under
 **Additional inputs**, while their JSON namespace remains `lumos_assumptions`:
 
-- **Parse (standalone)** exposes agentic Text, Table, and Figure scopes; Advanced
-  Chart Agent under Figure; `queue_priority`; and `settings.page_range`. Its
-  assumptions are expected Complex-page share and, when needed, likely and
-  maximum chart counts.
+- **Parse (standalone)** begins with a Legacy / r‑1 (Beta) model selector. The
+  r‑1 choice carries a linked **New** label that opens Reducto's announcement.
+  Legacy exposes agentic Text, Table, and Figure scopes; Advanced Chart Agent
+  under Figure; `queue_priority`; and `settings.page_range`. Its assumptions
+  are expected Complex-page share and, when needed, likely and maximum chart
+  counts. r‑1 keeps queue priority and page range, but hides Legacy-only
+  complexity and Agentic controls.
 - **Classify** exposes its context `page_range` and has no estimator assumption.
 - **Extract** is described as **Return structured fields from the document,
   parsing included.** It exposes `settings.include_images`,
@@ -454,8 +469,15 @@ that the uploaded document is a spreadsheet.
 Paste Parse alongside Extract or Split so Lumos can account for Parse page
 ranges and other cost-relevant Parse options within the downstream operation.
 Lumos does not add a separate Parse line because the current Extract and Split
-prices include parsing. A standalone Parse configuration creates a first-class
-Parse profile and receives a Standard/Complex estimate range.
+prices include parsing. A standalone Legacy Parse configuration receives a
+Standard/Complex estimate range. A standalone r‑1 configuration receives the
+known $10-per-1,000-pages subtotal and the r‑1 Beta rate-card identifier.
+
+Imported standalone Parse JSON with `settings.model: "r-1"` selects r‑1.
+Missing `settings.model` is treated as Legacy and produces a short import notice
+so existing profiles remain unchanged. `settings.model: "legacy"` is also
+accepted explicitly. Bundled Parse continues to use downstream pricing and is
+not switched to a separately priced r‑1 job.
 
 If standalone Parse enables Advanced Chart Agent without chart-count assumptions,
 Lumos records `parse.advanced_chart_count`. The Standard/Complex page estimate
@@ -712,7 +734,7 @@ cost-profile input.
     `assumed_extract_route` request field. Their visible processing labels come
     from the applied pipeline, while the public API continues to accept the
     optional per-document routing override.
-26. The simulator rate card displays all ten unit prices, applies valid edits
+26. The simulator rate card displays all eleven unit prices, applies valid edits
     atomically, and restores the public values when the session is cleared.
 27. Invalid, blank, negative, non-finite, scientific-notation, or range-inverting
     rate edits leave the previously applied simulator rates unchanged.
@@ -762,11 +784,22 @@ cost-profile input.
     stale-estimate status.
 42. Spreadsheet pricing, the API contract, estimator calculations, pricing
     behavior, importer behavior, and policy decisions remain unchanged.
+43. Missing or explicit `legacy` standalone Parse profiles preserve the prior
+    Standard/Complex estimates and the existing public rate-card identifier.
+44. Explicit `r-1` standalone Parse profiles use $10 per 1,000 processed pages,
+    honor page ranges and Batch discount, ignore Legacy complexity and Agentic
+    multipliers, and return the r‑1 Beta rate-card identifier.
+45. r‑1 custom prompts, OCR return, or Advanced Chart preserve the known base
+    subtotal but make the estimate incomplete with the excluded feature named;
+    promptless r‑1 Agentic scopes are rejected with corrective guidance.
+46. The footer version is an accessible disclosure, collapsed by default, whose
+    v0.1.33 note reads exactly **Added r‑1 Beta pricing.**
 
 ## 13. Official sources
 
 - https://docs.reducto.ai/reference/credit-usage
 - https://docs.reducto.ai/reference/pricing-migration
+- https://reducto.ai/blog/parse-r-1-model
 - https://docs.reducto.ai/configs/classify/configuration
 - https://docs.reducto.ai/configs/extract/deep-extract
 - https://docs.reducto.ai/extract/overview

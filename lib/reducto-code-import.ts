@@ -51,6 +51,7 @@ type SupportedOperation = "parse" | "classify" | "extract" | "split" | "edit";
 type CanonicalAgenticMode = {
   scope: "text" | "table" | "figure";
   mode?: string;
+  prompt?: string;
   advanced_chart_agent?: boolean;
 };
 
@@ -71,6 +72,7 @@ const PARSE_SETTING_KEYS = [
   "embed_pdf_metadata",
   "extraction_mode",
   "force_url_result",
+  "model",
   "ocr_system",
   "page_range",
   "persist_results",
@@ -524,6 +526,21 @@ function inspectParseConfig(config: JsonObject) {
     throw new Error("The nested parsing object does not contain a recognizable Parse configuration.");
   }
   const pageRanges = pageRangeFromValue(settings?.page_range, "Parse settings.page_range");
+  const modelValue = settings?.model;
+  if (
+    modelValue !== undefined &&
+    modelValue !== null &&
+    modelValue !== "legacy" &&
+    modelValue !== "r-1"
+  ) {
+    throw new Error('Parse settings.model must be "legacy" or "r-1".');
+  }
+  const model: "legacy" | "r-1" = modelValue === "r-1" ? "r-1" : "legacy";
+  const returnOcrData = optionalBoolean(
+    settings,
+    "return_ocr_data",
+    "Parse settings.return_ocr_data",
+  );
   const enhance = isObject(config.enhance) ? config.enhance : undefined;
   const formatting = isObject(config.formatting) ? config.formatting : undefined;
   const retrieval = isObject(config.retrieval) ? config.retrieval : undefined;
@@ -537,6 +554,8 @@ function inspectParseConfig(config: JsonObject) {
   ) {
     throw new Error('Parse queue_priority must be "auto" or "batch".');
   }
+  const canonicalQueuePriority: "auto" | "batch" | undefined =
+    queuePriority === "auto" || queuePriority === "batch" ? queuePriority : undefined;
   rejectUnknownKeys(settings ?? {}, PARSE_SETTING_KEYS, "Parse settings");
   rejectUnknownKeys(
     enhance ?? {},
@@ -617,6 +636,7 @@ function inspectParseConfig(config: JsonObject) {
         const canonical: CanonicalAgenticMode = {
           scope,
           ...(typeof modeName === "string" ? { mode: modeName } : {}),
+          ...(typeof mode.prompt === "string" ? { prompt: mode.prompt } : {}),
         };
         if (
           mode.prompt !== undefined &&
@@ -671,6 +691,9 @@ function inspectParseConfig(config: JsonObject) {
   );
   return {
     pageRanges,
+    model,
+    modelSpecified: modelValue !== undefined && modelValue !== null,
+    returnOcrData,
     agentic: Array.isArray(agentic) && agentic.length > 0,
     canonicalAgentic:
       topLevelAdvancedChart && canonicalAgentic === null
@@ -680,8 +703,7 @@ function inspectParseConfig(config: JsonObject) {
     advancedChart:
       topLevelAdvancedChart ||
       canonicalAgentic?.some((mode) => mode.advanced_chart_agent === true) === true,
-    queuePriority:
-      queuePriority === "auto" || queuePriority === "batch" ? queuePriority : undefined,
+    queuePriority: canonicalQueuePriority,
     spreadsheetConfig: hasOwn(config, "spreadsheet"),
   };
 }
@@ -966,6 +988,24 @@ function analyzeConfigurations(configurations: JsonObject[]): ReductoCodeImportR
     const standaloneParse = topLevelParse !== null && !extract && !split;
     const includedDownstreamParse = hasBundledParse && Boolean(extract || split);
     if (
+      standaloneParse &&
+      topLevelParse.model === "r-1" &&
+      topLevelParse.canonicalAgentic?.some(
+        (entry) =>
+          (typeof entry.prompt !== "string" || !entry.prompt.trim()) &&
+          !(entry.scope === "figure" && entry.advanced_chart_agent === true),
+      )
+    ) {
+      return failure(
+        "r-1 Agentic scopes require a prompt. Remove the promptless scope or select Legacy Parse.",
+        operations,
+        warnings,
+      );
+    }
+    if (standaloneParse && !topLevelParse.modelSpecified) {
+      warnings.push("No Parse model was specified, so Lumos priced this as Legacy.");
+    }
+    if (
       includedDownstreamParse &&
       [topLevelParse, extract?.parsing, split?.parsing].some(
         (value) => value?.queuePriority === "batch",
@@ -980,7 +1020,13 @@ function analyzeConfigurations(configurations: JsonObject[]): ReductoCodeImportR
     const unpricedCostFactors = [
       ...(extract?.includeImages ? ["extract.include_images"] : []),
       ...(extract?.fieldDensityUnpriced ? ["extract.field_density"] : []),
-      ...(standaloneParse && hasAdvancedChart ? ["parse.advanced_chart_count"] : []),
+      ...(standaloneParse && hasAdvancedChart
+        ? [
+            topLevelParse.model === "r-1"
+              ? "parse.r1_advanced_chart"
+              : "parse.advanced_chart_count",
+          ]
+        : []),
     ];
     if (extract?.includeImages) {
       warnings.push("Extract image context is enabled and remains an unpriced cost factor.");
@@ -990,7 +1036,9 @@ function analyzeConfigurations(configurations: JsonObject[]): ReductoCodeImportR
     }
     if (standaloneParse && hasAdvancedChart) {
       warnings.push(
-        "Advanced chart processing is configured, but no detected chart count is available before Parse runs, so that charge remains unpriced.",
+        topLevelParse.model === "r-1"
+          ? "Advanced Chart pricing for r-1 is excluded from this Beta estimate."
+          : "Advanced chart processing is configured, but no detected chart count is available before Parse runs, so that charge remains unpriced.",
       );
     }
 
@@ -1013,13 +1061,24 @@ function analyzeConfigurations(configurations: JsonObject[]): ReductoCodeImportR
             ...(topLevelParse.pageRanges
               ? {
                   settings: {
+                    model: topLevelParse.model,
+                    ...(topLevelParse.returnOcrData !== undefined
+                      ? { return_ocr_data: topLevelParse.returnOcrData }
+                      : {}),
                     page_range:
                       topLevelParse.pageRanges.length === 1
                         ? topLevelParse.pageRanges[0]
                         : topLevelParse.pageRanges,
                   },
                 }
-              : {}),
+              : {
+                  settings: {
+                    model: topLevelParse.model,
+                    ...(topLevelParse.returnOcrData !== undefined
+                      ? { return_ocr_data: topLevelParse.returnOcrData }
+                      : {}),
+                  },
+                }),
             ...(topLevelParse.queuePriority
               ? { queue_priority: topLevelParse.queuePriority }
               : {}),
@@ -1052,7 +1111,9 @@ function analyzeConfigurations(configurations: JsonObject[]): ReductoCodeImportR
         : null,
       edit: editConfig ? {} : null,
       lumos_assumptions: {
-        ...(standaloneParse ? { likely_complex_parse_share: 0.5 } : {}),
+        ...(standaloneParse && topLevelParse.model === "legacy"
+          ? { likely_complex_parse_share: 0.5 }
+          : {}),
         conditional_extract_routing: false,
         ...(extract?.schemaFieldCount == null
           ? {}

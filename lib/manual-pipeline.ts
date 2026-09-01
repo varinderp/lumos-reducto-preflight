@@ -7,6 +7,7 @@ import type { PublicPageRange, PublicPipeline } from "./pricing";
 
 export type ManualEndpoint = "parse" | "classify" | "extract" | "split" | "edit";
 export type ManualParseMode = "standard" | "agentic";
+export type ManualParsePricingModel = "legacy" | "r-1";
 export type ManualExtractMode = "off" | "standard" | "deep" | "conditional";
 export type ManualSplitMode = "off" | "standard" | "deep";
 
@@ -31,11 +32,15 @@ export type ManualPipelineDraft = {
     enabled: boolean;
     /** Parse configuration imported as part of downstream Extract or Split pricing. */
     includedDownstream: boolean;
+    pricingModel: ManualParsePricingModel;
     mode: ManualParseMode;
     agenticScopes: { text: boolean; table: boolean; figure: boolean };
     advancedChart: boolean;
     batch: boolean;
     pageSelection: ManualPageSelectionDraft;
+    /** Imported-only r-1 inputs are retained without adding speculative form controls. */
+    returnOcrData?: boolean;
+    preservedAgentic?: ReductoJsonObject[];
   };
   classify: { enabled: boolean; start: string; end: string };
   extract: {
@@ -80,6 +85,7 @@ export const DEFAULT_MANUAL_PIPELINE_DRAFT: ManualPipelineDraft = {
   parse: {
     enabled: false,
     includedDownstream: false,
+    pricingModel: "legacy",
     mode: "standard",
     agenticScopes: { text: false, table: false, figure: false },
     advancedChart: false,
@@ -247,7 +253,7 @@ function agenticEntries(
   if (draft.parse.advancedChart) scopes.figure = true;
   const importedEnhance = draft.importedConfigurations?.parse?.enhance;
   const fallbackValue = isJsonObject(importedEnhance) ? importedEnhance.agentic : undefined;
-  const sourceAgentic = existingValue ?? fallbackValue;
+  const sourceAgentic = existingValue ?? fallbackValue ?? draft.parse.preservedAgentic;
   const existingAgentic = Array.isArray(sourceAgentic)
     ? sourceAgentic.filter(isJsonObject)
     : [];
@@ -353,6 +359,10 @@ export function manualDraftToReductoConfigurations(
       }
       if (standaloneParse) {
         const settings = objectChild(parse, "settings");
+        settings.model = draft.parse.pricingModel;
+        if (draft.parse.returnOcrData !== undefined) {
+          settings.return_ocr_data = draft.parse.returnOcrData;
+        }
         writePageRange(settings, ranges?.parse);
         removeEmptyChild(parse, "settings");
         parse.queue_priority = draft.parse.batch ? "batch" : "auto";
@@ -450,6 +460,20 @@ export function manualDraftToPipeline(
     errors["parse.agenticScopes"] = "Choose Text, Table, or Figure for Agentic Parse.";
   }
 
+  const parseAgenticEntries = agenticEntries(draft);
+  if (
+    standaloneParse &&
+    draft.parse.pricingModel === "r-1" &&
+    parseAgenticEntries.some(
+      (entry) =>
+        (typeof entry.prompt !== "string" || !entry.prompt.trim()) &&
+        !(entry.scope === "figure" && entry.advanced_chart_agent === true),
+    )
+  ) {
+    errors["parse.agenticScopes"] =
+      "r-1 Agentic scopes require a prompt. Remove the promptless scope or select Legacy Parse.";
+  }
+
   const parsePageRange = standaloneParse
     ? validatedPageRange(draft.parse.pageSelection, errors, "parse.pageSelection")
     : undefined;
@@ -480,7 +504,7 @@ export function manualDraftToPipeline(
   }
 
   let complexShare = 50;
-  if (standaloneParse) {
+  if (standaloneParse && draft.parse.pricingModel === "legacy") {
     const parsed = percentage(draft.assumptions.complexSharePercent);
     if (!parsed.valid) {
       errors["assumptions.complexSharePercent"] =
@@ -491,7 +515,10 @@ export function manualDraftToPipeline(
   let likelyChartCount = 0;
   let maximumChartCount = 0;
   const usesChartCounts =
-    standaloneParse && draft.parse.advancedChart && draft.assumptions.chartCountsEnabled;
+    standaloneParse &&
+    draft.parse.pricingModel === "legacy" &&
+    draft.parse.advancedChart &&
+    draft.assumptions.chartCountsEnabled;
   if (usesChartCounts) {
     const likely = wholeNumber(draft.assumptions.likelyChartCount);
     const maximum = wholeNumber(draft.assumptions.maximumChartCount);
@@ -551,16 +578,23 @@ export function manualDraftToPipeline(
     return { ok: false, pipeline: null, configurations: null, errors };
   }
 
-  const agentic = agenticEntries(draft).map((entry) => ({
+  const agentic = parseAgenticEntries.map((entry) => ({
     scope: entry.scope as "text" | "table" | "figure",
     ...(typeof entry.mode === "string" ? { mode: entry.mode } : {}),
+    ...(typeof entry.prompt === "string" ? { prompt: entry.prompt } : {}),
     ...(entry.advanced_chart_agent === true ? { advanced_chart_agent: true } : {}),
   }));
 
   const parse: PublicPipeline["parse"] = standaloneParse
     ? {
         ...(agentic.length > 0 ? { enhance: { agentic } } : {}),
-        ...(parsePageRange ? { settings: { page_range: parsePageRange } } : {}),
+        settings: {
+          model: draft.parse.pricingModel,
+          ...(draft.parse.returnOcrData !== undefined
+            ? { return_ocr_data: draft.parse.returnOcrData }
+            : {}),
+          ...(parsePageRange ? { page_range: parsePageRange } : {}),
+        },
         ...(standaloneParse && draft.parse.batch ? { queue_priority: "batch" as const } : {}),
       }
     : bundledParse
@@ -604,7 +638,9 @@ export function manualDraftToPipeline(
     split,
     edit: draft.edit.enabled ? {} : null,
     lumos_assumptions: {
-      ...(standaloneParse ? { likely_complex_parse_share: complexShare / 100 } : {}),
+      ...(standaloneParse && draft.parse.pricingModel === "legacy"
+        ? { likely_complex_parse_share: complexShare / 100 }
+        : {}),
       ...(usesChartCounts
         ? {
             advanced_chart_counts: {
@@ -703,6 +739,21 @@ function rawAgentic(configurations: ReductoImportedConfigurations | undefined) {
   });
 }
 
+function rawParseSettings(configurations: ReductoImportedConfigurations | undefined) {
+  const nestedSettings = (configuration: ReductoJsonObject | null | undefined) => {
+    const parsing = configuration?.parsing;
+    return isJsonObject(parsing) && isJsonObject(parsing.settings)
+      ? parsing.settings
+      : undefined;
+  };
+  const candidates = [
+    configurations?.parse?.settings,
+    nestedSettings(configurations?.extract),
+    nestedSettings(configurations?.split),
+  ];
+  return candidates.find(isJsonObject);
+}
+
 /** Hydrate every simulator-supported pricing input from a canonical pipeline. */
 export function pipelineToManualDraft(
   pipeline: PublicPipeline,
@@ -732,6 +783,17 @@ export function pipelineToManualDraft(
   const publicAgentic = pipeline.parse?.enhance?.agentic ?? [];
   const importedAgentic = rawAgentic(importedConfigurations);
   const agentic = importedAgentic.length > 0 ? importedAgentic : publicAgentic;
+  const importedParseSettings = rawParseSettings(importedConfigurations);
+  const importedPricingModel = importedParseSettings?.model;
+  const pricingModel: ManualParsePricingModel =
+    pipeline.parse?.settings?.model === "r-1" || importedPricingModel === "r-1"
+      ? "r-1"
+      : "legacy";
+  const returnOcrData =
+    pipeline.parse?.settings?.return_ocr_data ??
+    (typeof importedParseSettings?.return_ocr_data === "boolean"
+      ? importedParseSettings.return_ocr_data
+      : undefined);
   const hasScope = (scope: "text" | "table" | "figure") =>
     agentic.some((mode) => mode.scope === scope);
   const advancedChart = agentic.some(
@@ -752,6 +814,7 @@ export function pipelineToManualDraft(
     parse: {
       enabled: parseEnabled && !includedDownstream,
       includedDownstream,
+      pricingModel,
       mode: agentic.length > 0 ? "agentic" : "standard",
       agenticScopes: {
         text: hasScope("text"),
@@ -764,6 +827,14 @@ export function pipelineToManualDraft(
         parseEnabled && !extractEnabled && !splitEnabled ? parsePageRange : undefined,
         "parse",
       ),
+      ...(returnOcrData !== undefined ? { returnOcrData } : {}),
+      ...(agentic.length > 0
+        ? {
+            preservedAgentic: agentic.map(
+              (entry) => cloneJsonValue(entry as ReductoJsonValue) as ReductoJsonObject,
+            ),
+          }
+        : {}),
     },
     classify: {
       enabled: pipeline.classify != null,

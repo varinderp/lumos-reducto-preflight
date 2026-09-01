@@ -228,9 +228,11 @@ test("imports the supplied standalone Parse configuration without treating its s
   assert.equal(result.detected.spreadsheet, false);
   assert.deepEqual(result.pipeline.parse, {
     enhance: { agentic: [] },
+    settings: { model: "legacy", return_ocr_data: false },
   });
   assert.equal(result.pipeline.lumos_assumptions.likely_complex_parse_share, 0.5);
   assert.match(result.warnings.join(" "), /spreadsheet settings group/i);
+  assert.match(result.warnings.join(" "), /No Parse model was specified.*Legacy/i);
 });
 
 test("preserves standalone Parse agentic modes and every normalized page range", () => {
@@ -253,6 +255,8 @@ test("preserves standalone Parse agentic modes and every normalized page range",
       ],
     },
     settings: {
+      model: "legacy",
+      return_ocr_data: true,
       page_range: [
         { start: 1, end: 5 },
         { start: 8, end: 10 },
@@ -261,6 +265,30 @@ test("preserves standalone Parse agentic modes and every normalized page range",
     },
   });
   assert.equal(result.pipeline.lumos_assumptions.likely_complex_parse_share, 0.5);
+  assert.match(result.warnings.join(" "), /No Parse model was specified.*Legacy/i);
+});
+
+test("imports an explicit r-1 Parse model without adding a Legacy fallback notice", () => {
+  const result = importReductoCode(`{
+    "settings": {
+      "model": "r-1",
+      "page_range": { "start": 2, "end": 7 },
+      "return_ocr_data": false
+    },
+    "queue_priority": "batch"
+  }`);
+
+  assert.equal(result.applicable, true);
+  assert.deepEqual(result.pipeline.parse, {
+    settings: {
+      model: "r-1",
+      return_ocr_data: false,
+      page_range: { start: 2, end: 7 },
+    },
+    queue_priority: "batch",
+  });
+  assert.equal(result.pipeline.lumos_assumptions.likely_complex_parse_share, undefined);
+  assert.doesNotMatch(result.warnings.join(" "), /No Parse model was specified|Legacy/);
 });
 
 test("keeps standalone advanced-chart Parse applicable while marking chart count unpriced", () => {
@@ -706,7 +734,10 @@ test("prices Parse as standalone when Classify is the only other operation", () 
 
   assert.equal(result.applicable, true);
   assert.deepEqual(result.detected.operations, ["parse", "classify"]);
-  assert.deepEqual(result.pipeline.parse, { enhance: { agentic: [] } });
+  assert.deepEqual(result.pipeline.parse, {
+    enhance: { agentic: [] },
+    settings: { model: "legacy", return_ocr_data: false },
+  });
   assert.deepEqual(result.pipeline.classify, {
     page_range: { start: 1, end: 3 },
   });

@@ -13,6 +13,8 @@ same pricing engine.
 - Returns low, likely, and high USD estimates with an
   `allow`, `review`, or `deny` policy decision.
 - Does not run Reducto or incur a Reducto fee when creating an estimate.
+- Keeps Legacy Parse as the default and offers opt-in r‑1 Beta pricing for
+  standalone Parse.
 
 ## Run locally
 

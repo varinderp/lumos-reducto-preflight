@@ -3,7 +3,9 @@ import type { PublicPipeline } from "./pricing";
 export function simulatorModeLabel(pipeline: PublicPipeline) {
   const modes: string[] = [];
 
-  if (pipeline.parse != null) modes.push("Parse");
+  if (pipeline.parse != null) {
+    modes.push(pipeline.parse.settings?.model === "r-1" ? "r‑1 Parse (Beta)" : "Parse");
+  }
   if (pipeline.classify != null) modes.push("Classify");
 
   if (pipeline.extract != null) {

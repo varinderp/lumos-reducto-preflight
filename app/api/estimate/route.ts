@@ -1,4 +1,10 @@
-import { estimatePipeline, normalizeRequest, RATE_CARD, type PublicEstimateRequest } from "@/lib/pricing";
+import {
+  estimatePipeline,
+  normalizeRequest,
+  R1_RATE_CARD,
+  RATE_CARD,
+  type PublicEstimateRequest,
+} from "@/lib/pricing";
 
 export async function POST(request: Request) {
   try {
@@ -37,7 +43,7 @@ export async function POST(request: Request) {
         extract_cost_multiplier: estimate.extractCostMultiplier,
       },
       assumptions_used: {
-        ...(estimate.parseMode === "standalone"
+        ...(estimate.parseMode === "standalone" && estimate.parseModel === "legacy"
           ? { likely_complex_parse_share: estimate.parseLikelyComplexShare }
           : {}),
         ...(estimate.parseAdvancedChartCounts
@@ -52,7 +58,7 @@ export async function POST(request: Request) {
           ? { likely_deep_extract_share: input.pipeline.deepShare }
           : {}),
       },
-      rate_card: RATE_CARD,
+      rate_card: estimate.parseModel === "r-1" ? R1_RATE_CARD : RATE_CARD,
       has_range: estimate.low !== estimate.high,
       estimate_complete: estimate.estimateComplete,
       unpriced_cost_factors: estimate.unpricedCostFactors,

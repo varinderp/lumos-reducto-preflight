@@ -165,12 +165,89 @@ test("standalone Parse can coexist with additive Classify and Edit", async () =>
 
   const result = manualDraftToPipeline(draft, 10);
   assert.equal(result.ok, true);
-  assert.deepEqual(result.pipeline.parse, {});
+  assert.deepEqual(result.pipeline.parse, { settings: { model: "legacy" } });
   assert.deepEqual(result.pipeline.classify, { page_range: { start: 1, end: 5 } });
   assert.deepEqual(result.pipeline.edit, {});
   assert.equal(result.pipeline.extract, null);
   assert.equal(result.pipeline.split, null);
   assert.equal(result.pipeline.lumos_assumptions.known_fully_prefilled_edit_pages, 2);
+});
+
+test("standalone r-1 maps its explicit model, page range, and Batch without Legacy assumptions", async () => {
+  const { DEFAULT_MANUAL_PIPELINE_DRAFT, manualDraftToPipeline } = await loadManualPipeline();
+  const draft = clone(DEFAULT_MANUAL_PIPELINE_DRAFT);
+  draft.extract.mode = "off";
+  Object.assign(draft.parse, {
+    enabled: true,
+    pricingModel: "r-1",
+    batch: true,
+    pageSelection: {
+      mode: "selected",
+      ranges: [{ start: "2", end: "6" }],
+    },
+  });
+  // This value is intentionally invalid for Legacy. r-1 must not read it.
+  draft.assumptions.complexSharePercent = "not-a-percentage";
+
+  const result = manualDraftToPipeline(draft);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.pipeline.parse, {
+    settings: {
+      model: "r-1",
+      page_range: { start: 2, end: 6 },
+    },
+    queue_priority: "batch",
+  });
+  assert.equal(result.pipeline.lumos_assumptions.likely_complex_parse_share, undefined);
+  assert.deepEqual(result.configurations.parse.settings, {
+    model: "r-1",
+    page_range: { start: 2, end: 6 },
+  });
+});
+
+test("an explicit r-1 profile hydrates and reapplies without changing its cost inputs", async () => {
+  const { manualDraftToPipeline, pipelineToManualDraft } = await loadManualPipeline();
+  const { estimatePipeline, normalizeRequest } = await loadTypeScriptModule("../lib/pricing.ts");
+  const imported = {
+    parse: {
+      settings: { model: "r-1", page_range: { start: 3, end: 8 } },
+      queue_priority: "batch",
+    },
+    classify: null,
+    extract: null,
+    split: null,
+    edit: null,
+    lumos_assumptions: {},
+  };
+
+  const draft = pipelineToManualDraft(imported, {
+    parse: {
+      settings: { model: "r-1", page_range: { start: 3, end: 8 } },
+      queue_priority: "batch",
+    },
+    classify: null,
+    extract: null,
+    split: null,
+    edit: null,
+  });
+  assert.equal(draft.parse.enabled, true);
+  assert.equal(draft.parse.pricingModel, "r-1");
+  assert.equal(draft.parse.batch, true);
+  assert.deepEqual(draft.parse.pageSelection.ranges.map(({ start, end }) => ({ start, end })), [
+    { start: "3", end: "8" },
+  ]);
+
+  const reapplied = manualDraftToPipeline(draft);
+  assert.equal(reapplied.ok, true);
+  assert.deepEqual(reapplied.pipeline, imported);
+
+  const documents = [{ name: "packet.pdf", pages: 20 }];
+  const before = estimatePipeline(normalizeRequest({ documents, pipeline: imported }));
+  const after = estimatePipeline(normalizeRequest({ documents, pipeline: reapplied.pipeline }));
+  assert.deepEqual(
+    { low: after.low, likely: after.likely, high: after.high, pages: after.parsePages },
+    { low: before.low, likely: before.likely, high: before.high, pages: before.parsePages },
+  );
 });
 
 test("Classify, conditional Extract, and Edit map every visible assumption", async () => {

@@ -508,6 +508,34 @@ textarea {
 }
 .choice-row input,
 .check-field input { margin-top: 5px; }
+.parse-model-options { align-items: center; }
+.r1-model-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.new-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 1px 7px;
+  border: 1px solid #8ea6db;
+  border-radius: 999px;
+  background: #eaf0ff;
+  color: #153e9f;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  font-weight: bold;
+  letter-spacing: 0.05em;
+  text-decoration: none;
+  text-transform: uppercase;
+}
+.new-badge:hover { background: #dce6ff; }
+.parse-model-note {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
 .check-field small {
   color: var(--muted);
   font-family: Georgia, "Times New Roman", serif;
@@ -654,6 +682,13 @@ footer {
   color: var(--muted);
   font-size: 13px;
 }
+.release-note {
+  width: fit-content;
+  padding: 0;
+  border: 0;
+}
+.release-note summary { font-size: 13px; }
+.release-note p { margin: 4px 0 0; }
 
 @media (max-width: 620px) {
   body { font-size: 16px; }

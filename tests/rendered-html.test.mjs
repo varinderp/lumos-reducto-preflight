@@ -48,6 +48,7 @@ const REPLACED_SOLUTION_FRAGMENTS = [
 const RATE_CARD_DEFAULTS = {
   parseStandard: "15",
   parseComplex: "30",
+  parseR1: "10",
   advancedChart: "0.06",
   classify: "7.5",
   extract: "20",
@@ -196,8 +197,9 @@ test("server-renders the Lumos simulator and API", async () => {
     assert.match(html, new RegExp(`id="rate-${key}"[^>]*value="${escapedValue}"`));
   }
   for (const label of [
-    "Standard Parse",
-    "Complex Parse",
+    "Legacy Parse — Standard",
+    "Legacy Parse — Complex",
+    "r‑1 Parse \\(Beta\\)",
     "Advanced Chart",
     "Classify",
     "Standard Extract",
@@ -257,8 +259,15 @@ test("server-renders the Lumos simulator and API", async () => {
   assert.match(html, /authenticated server-to-server integration/);
   assert.match(html, /Verify with Reducto/);
   assert.match(html, /Created by/);
+  assert.match(
+    html,
+    /Created by[\s\S]*?href="https:\/\/varindersaini\.com"[\s\S]*?Varinder Saini[\s\S]*?href="https:\/\/github\.com\/varinderp\/lumos-reducto-preflight"[\s\S]*?Lumos GitHub/,
+  );
   assert.match(html, /varindersaini\.com/);
-  assert.match(html, /v0\.1\.31/);
+  assert.match(
+    html,
+    /<details class="release-note"><summary aria-label="Lumos version 0\.1\.33; show release note">v0\.1\.33<\/summary><p>Added r‑1 Beta pricing\.<\/p><\/details>/,
+  );
   assert.doesNotMatch(html, />Paste Reducto JSON config</);
   assert.match(html, /<footer>[\s\S]*?Sources:/);
   assert.doesNotMatch(html, /<footer>[\s\S]*?Lumos uses Reducto/);
@@ -273,10 +282,12 @@ test("server-renders the Lumos simulator and API", async () => {
   await assert.rejects(access(new URL("../public/waiver.png", import.meta.url)));
 });
 
-test("pricing exports the ten public unit rates and keeps fixed rules separate", async () => {
+test("pricing exports the eleven public unit rates and keeps fixed rules separate", async () => {
   const {
     DEFAULT_PRICING_UNIT_RATES,
     FIXED_PRICING_RULES,
+    R1_RATE_CARD,
+    RATE_CARD,
     estimatePipeline,
     normalizeRequest,
   } = await importTypeScriptModule("../lib/pricing.ts");
@@ -284,6 +295,7 @@ test("pricing exports the ten public unit rates and keeps fixed rules separate",
   assert.deepEqual(DEFAULT_PRICING_UNIT_RATES, {
     parseStandard: 0.015,
     parseComplex: 0.03,
+    parseR1: 0.01,
     advancedChart: 0.06,
     classify: 0.0075,
     extract: 0.02,
@@ -293,8 +305,10 @@ test("pricing exports the ten public unit rates and keeps fixed rules separate",
     edit: 0.06,
     editPrefilled: 0.015,
   });
-  assert.equal(Object.keys(DEFAULT_PRICING_UNIT_RATES).length, 10);
+  assert.equal(Object.keys(DEFAULT_PRICING_UNIT_RATES).length, 11);
   assert.equal(Object.isFrozen(DEFAULT_PRICING_UNIT_RATES), true);
+  assert.equal(RATE_CARD, "reducto-public-2026-09-01");
+  assert.equal(R1_RATE_CARD, "reducto-public-2026-09-01-r1-beta");
   assert.deepEqual(FIXED_PRICING_RULES, {
     agenticParseMultiplier: 2,
     extractLatencyMultiplier: 2,
@@ -368,6 +382,7 @@ test("custom simulator rates affect every editable pricing product", async () =>
   const rates = {
     parseStandard: 0.101,
     parseComplex: 0.202,
+    parseR1: 0.111,
     advancedChart: 0.909,
     classify: 1.01,
     extract: 0.303,
@@ -405,6 +420,15 @@ test("custom simulator rates affect every editable pricing product", async () =>
     10 * rates.parseComplex * 2 + 3 * rates.advancedChart,
     "Complex Parse and chart rates",
   );
+
+  const r1Input = normalizeRequest({
+    documents: [{ name: "r1.pdf", pages: 10 }],
+    pipeline: { parse: { settings: { model: "r-1" } } },
+  });
+  const r1Estimate = estimatePipeline(r1Input, rates);
+  assertClose(r1Estimate.parseLow, 10 * rates.parseR1, "r-1 Parse");
+  assertClose(r1Estimate.parseLikely, 10 * rates.parseR1, "r-1 Parse");
+  assertClose(r1Estimate.parseHigh, 10 * rates.parseR1, "r-1 Parse");
 
   const classifyInput = normalizeRequest({
     documents: [{ name: "contract.pdf", pages: 10 }],
@@ -694,6 +718,7 @@ test("rate-card source preserves drafts, accessibility, used marks, and API isol
   );
   assert.match(source, /role="alert"[\s\S]*?Review the highlighted rate card values/);
   assert.match(source, /className="used-label">Used<\/span>/);
+  assert.match(source, /parseModel === "r-1"[\s\S]*?rates\.add\("parseR1"\)/);
   assert.match(source, /rates\.add\("parseStandard"\)[\s\S]*?rates\.add\("parseComplex"\)/);
   assert.match(source, /conditional_extract_routing[\s\S]*?rates\.add\("extract"\)[\s\S]*?rates\.add\("deepExtract"\)/);
   assert.match(source, /FIXED_PRICING_RULES\.agenticParseMultiplier/);
@@ -707,6 +732,46 @@ test("rate-card source preserves drafts, accessibility, used marks, and API isol
     source,
     /displayValue \/ \(field\.perThousand \? 1000 : 1\)/,
   );
+});
+
+test("r-1 Beta controls, announcement, preview card, and release note stay explicit", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+
+  assert.match(source, /<legend>Pricing model<\/legend>/);
+  assert.match(
+    source,
+    /name="parse-pricing-model"[\s\S]*?pricingModel === "legacy"[\s\S]*?>\s*Legacy\s*<\/label>/,
+  );
+  assert.match(
+    source,
+    /name="parse-pricing-model"[\s\S]*?pricingModel === "r-1"[\s\S]*?>\s*r‑1 \(Beta\)\s*<\/label>/,
+  );
+  assert.match(
+    source,
+    /className="new-badge"[\s\S]*?href="https:\/\/reducto\.ai\/blog\/parse-r-1-model"[\s\S]*?target="_blank"[\s\S]*?aria-label="New: read Reducto's r-1 model announcement"[\s\S]*?>\s*New\s*<\/a>/,
+  );
+  assert.match(styles, /\.new-badge\s*\{/);
+  assert.match(source, /\{ key: "parseR1", label: "r‑1 Parse \(Beta\)", perThousand: true \}/);
+  assert.match(
+    source,
+    /rate_card: apiEstimate\.parseModel === "r-1" \? R1_RATE_CARD : RATE_CARD/,
+  );
+  assert.match(
+    source,
+    /estimate\.parseLow === estimate\.parseHigh[\s\S]*?money\(estimate\.parseLikely\)/,
+  );
+
+  const releaseStart = source.indexOf('<details className="release-note">');
+  const releaseEnd = source.indexOf("</details>", releaseStart) + "</details>".length;
+  assert.ok(releaseStart > -1 && releaseEnd > releaseStart);
+  const releaseSource = source.slice(releaseStart, releaseEnd);
+  assert.match(
+    releaseSource,
+    /<summary aria-label=\{`Lumos version \$\{packageJson\.version\}; show release note`\}>/,
+  );
+  assert.match(releaseSource, /<p>Added r‑1 Beta pricing\.<\/p>/);
+  assert.doesNotMatch(releaseSource, /<details[^>]*\sopen(?:=|\s|>)/);
 });
 
 test("browser estimator derives processing mode from an applied pipeline", async () => {
@@ -961,6 +1026,10 @@ test("simulator mode labels come only from the configured priced operations", as
     "Deep Split",
   );
   assert.equal(simulatorModeLabel({ parse: {} }), "Parse");
+  assert.equal(
+    simulatorModeLabel({ parse: { settings: { model: "r-1" } } }),
+    "r‑1 Parse (Beta)",
+  );
   assert.equal(simulatorModeLabel({ classify: {} }), "Classify");
   assert.equal(simulatorModeLabel({ edit: {} }), "Edit");
   assert.equal(

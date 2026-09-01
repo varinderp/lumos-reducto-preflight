@@ -17,6 +17,7 @@ import {
   FIXED_PRICING_RULES,
   normalizeRequest,
   RATE_CARD,
+  R1_RATE_CARD,
   type PricingUnitRates,
   type PublicPipeline,
 } from "@/lib/pricing";
@@ -55,8 +56,9 @@ const RATE_GROUPS = [
   {
     name: "Parse",
     fields: [
-      { key: "parseStandard", label: "Standard Parse", perThousand: true },
-      { key: "parseComplex", label: "Complex Parse", perThousand: true },
+      { key: "parseStandard", label: "Legacy Parse — Standard", perThousand: true },
+      { key: "parseComplex", label: "Legacy Parse — Complex", perThousand: true },
+      { key: "parseR1", label: "r‑1 Parse (Beta)", perThousand: true },
       { key: "advancedChart", label: "Advanced Chart", perThousand: false },
     ],
   },
@@ -423,7 +425,8 @@ function importSummary(result: ReductoCodeImportResult) {
       return result.detected.extractMode === "deep" ? "Deep Extract" : "Standard Extract";
     }
     if (operation === "parse") {
-      return result.pipeline?.parse?.enhance?.agentic?.length ? "Agentic Parse" : "Parse";
+      if (result.pipeline?.parse?.settings?.model === "r-1") return "r‑1 Parse (Beta)";
+      return result.pipeline?.parse?.enhance?.agentic?.length ? "Agentic Parse" : "Legacy Parse";
     }
     if (operation === "pipeline") return "deployed pipeline call";
     return operation.charAt(0).toUpperCase() + operation.slice(1);
@@ -457,6 +460,9 @@ function unpricedFactorLabel(factor: string, advancedChartRate: string) {
     return `the $${advancedChartRate}-per-detected-chart charge because no chart count was provided`;
   }
   if (factor === "extract.field_density") return "a possible dense-field surcharge";
+  if (factor === "parse.r1_agentic_prompt") return "r‑1 custom-prompt pricing";
+  if (factor === "parse.r1_return_ocr_data") return "r‑1 OCR-return pricing";
+  if (factor === "parse.r1_advanced_chart") return "r‑1 Advanced Chart pricing";
   return factor;
 }
 
@@ -589,12 +595,17 @@ export default function Home() {
 
     const standaloneParse = pipeline.parse != null && pipeline.extract == null && pipeline.split == null;
     if (standaloneParse) {
-      rates.add("parseStandard");
-      rates.add("parseComplex");
-      const agenticModes = pipeline.parse?.enhance?.agentic ?? [];
-      if (agenticModes.length > 0) rules.add("agentic");
-      if (agenticModes.some((mode) => mode.advanced_chart_agent === true)) {
-        rates.add("advancedChart");
+      const parseModel = pipeline.parse?.settings?.model === "r-1" ? "r-1" : "legacy";
+      if (parseModel === "r-1") {
+        rates.add("parseR1");
+      } else {
+        rates.add("parseStandard");
+        rates.add("parseComplex");
+        const agenticModes = pipeline.parse?.enhance?.agentic ?? [];
+        if (agenticModes.length > 0) rules.add("agentic");
+        if (agenticModes.some((mode) => mode.advanced_chart_agent === true)) {
+          rates.add("advancedChart");
+        }
       }
       if (pipeline.parse?.queue_priority === "batch") rules.add("batch");
     }
@@ -715,7 +726,7 @@ export default function Home() {
               extract_cost_multiplier: apiEstimate.extractCostMultiplier,
             },
             assumptions_used: {
-              ...(apiEstimate.parseMode === "standalone"
+              ...(apiEstimate.parseMode === "standalone" && apiEstimate.parseModel === "legacy"
                 ? { likely_complex_parse_share: apiEstimate.parseLikelyComplexShare }
                 : {}),
               ...(apiEstimate.parseAdvancedChartCounts
@@ -733,7 +744,7 @@ export default function Home() {
                   }
                 : {}),
             },
-            rate_card: RATE_CARD,
+            rate_card: apiEstimate.parseModel === "r-1" ? R1_RATE_CARD : RATE_CARD,
             has_range: apiEstimate.low !== apiEstimate.high,
             estimate_complete: apiEstimate.estimateComplete,
             unpriced_cost_factors: apiEstimate.unpricedCostFactors,
@@ -751,7 +762,11 @@ export default function Home() {
   const estimateBreakdown = estimate
     ? [
         estimate.parseMode === "standalone"
-          ? `Parse ${money(estimate.parseLow)}–${money(estimate.parseHigh)} across ${estimate.parsePages} priced pages`
+          ? `${estimate.parseModel === "r-1" ? "r‑1 Parse" : "Legacy Parse"} ${
+              estimate.parseLow === estimate.parseHigh
+                ? money(estimate.parseLikely)
+                : `${money(estimate.parseLow)}–${money(estimate.parseHigh)}`
+            } across ${estimate.parsePages} priced pages`
           : null,
         pipeline.classify != null ? `Classify ${money(estimate.classifyCost)}` : null,
         pipeline.extract != null
@@ -1419,7 +1434,64 @@ export default function Home() {
                       <>
                         <div className="config-group">
                           <fieldset className="builder-section compact-builder-section">
-                            <legend>Agentic</legend>
+                            <legend>Pricing model</legend>
+                            <div className="choice-row parse-model-options">
+                              <label>
+                                <input
+                                  type="radio"
+                                  name="parse-pricing-model"
+                                  checked={manualDraft.parse.pricingModel === "legacy"}
+                                  onChange={() =>
+                                    updateManualDraft((current) => ({
+                                      ...current,
+                                      parse: { ...current.parse, pricingModel: "legacy" },
+                                    }))
+                                  }
+                                />
+                                Legacy
+                              </label>
+                              <span className="r1-model-option">
+                                <label>
+                                  <input
+                                    type="radio"
+                                    name="parse-pricing-model"
+                                    checked={manualDraft.parse.pricingModel === "r-1"}
+                                    onChange={() =>
+                                      updateManualDraft((current) => ({
+                                        ...current,
+                                        parse: {
+                                          ...current.parse,
+                                          pricingModel: "r-1",
+                                          mode: "standard",
+                                          advancedChart: false,
+                                        },
+                                      }))
+                                    }
+                                  />
+                                  r‑1 (Beta)
+                                </label>
+                                <a
+                                  className="new-badge"
+                                  href="https://reducto.ai/blog/parse-r-1-model"
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  aria-label="New: read Reducto's r-1 model announcement"
+                                >
+                                  New
+                                </a>
+                              </span>
+                            </div>
+                            {manualDraft.parse.pricingModel === "r-1" && (
+                              <p className="parse-model-note">
+                                Preview pricing at $10 per 1,000 pages. Advanced add-ons remain
+                                excluded from this Beta estimate.
+                              </p>
+                            )}
+                          </fieldset>
+
+                          {manualDraft.parse.pricingModel === "legacy" && (
+                            <fieldset className="builder-section compact-builder-section">
+                              <legend>Agentic</legend>
                             <label className="check-field">
                               <input
                                 type="checkbox"
@@ -1501,7 +1573,8 @@ export default function Home() {
                                 </label>
                               </div>
                             )}
-                          </fieldset>
+                            </fieldset>
+                          )}
 
                           <fieldset className="builder-section compact-builder-section">
                             <legend>Queue Priority</legend>
@@ -1552,8 +1625,9 @@ export default function Home() {
                           />
                         </div>
 
-                        <div className="config-group lumos-config-group">
-                          <h5>Additional inputs</h5>
+                        {manualDraft.parse.pricingModel === "legacy" && (
+                          <div className="config-group lumos-config-group">
+                            <h5>Additional inputs</h5>
                           <label className="number-field">
                             Expected Complex page share
                             <span>
@@ -1659,7 +1733,8 @@ export default function Home() {
                               )}
                             </div>
                           )}
-                        </div>
+                          </div>
+                        )}
                       </>
                     )}
                   </section>
@@ -2542,8 +2617,16 @@ const result = await reducto.pipeline.run({ input, pipeline_id });`}</code></pre
           <a href="https://docs.reducto.ai/reference/page-billing-breakdown">billing breakdown</a>, and {" "}
           <a href="https://docs.reducto.ai/workflows/pipeline-basics">pipeline basics</a>.
         </p>
-        <p>Created by <a href="https://varindersaini.com">Varinder Saini</a></p>
-        <p aria-label="Lumos version">{`v${packageJson.version}`}</p>
+        <p>
+          Created by <a href="https://varindersaini.com">Varinder Saini</a> · {" "}
+          <a href="https://github.com/varinderp/lumos-reducto-preflight">Lumos GitHub</a>
+        </p>
+        <details className="release-note">
+          <summary aria-label={`Lumos version ${packageJson.version}; show release note`}>
+            {`v${packageJson.version}`}
+          </summary>
+          <p>Added r‑1 Beta pricing.</p>
+        </details>
       </footer>
     </main>
   );

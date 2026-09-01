@@ -1,5 +1,6 @@
 export type RouteMode = "unknown" | "standard" | "deep";
 export type ParseMode = "none" | "standalone" | "bundled";
+export type ParsePricingModel = "legacy" | "r-1";
 export type ExtractMode = "none" | "standard" | "conditional" | "deep";
 export type SplitMode = "none" | "standard" | "deep";
 export type Decision = "allow" | "review" | "deny";
@@ -20,6 +21,7 @@ export type PricingDocument = {
 
 export type PipelinePricingConfig = {
   parseMode: ParseMode;
+  parseModel: ParsePricingModel;
   parsePageRanges: PageInterval[] | null;
   parseCostMultiplier: number;
   parseBatchDiscount: number;
@@ -53,11 +55,14 @@ export type PublicPipeline = {
       agentic?: Array<{
         scope: "text" | "table" | "figure";
         mode?: string;
+        prompt?: string;
         advanced_chart_agent?: boolean;
       }> | null;
     } | null;
     settings?: {
       page_range?: PublicPageRange | null;
+      model?: ParsePricingModel;
+      return_ocr_data?: boolean;
     } | null;
     queue_priority?: "auto" | "batch";
   } | null;
@@ -100,10 +105,12 @@ export type PublicEstimateRequest = {
 };
 
 export const RATE_CARD = "reducto-public-2026-09-01";
+export const R1_RATE_CARD = "reducto-public-2026-09-01-r1-beta";
 
 export type PricingUnitRates = {
   parseStandard: number;
   parseComplex: number;
+  parseR1: number;
   advancedChart: number;
   classify: number;
   extract: number;
@@ -117,6 +124,7 @@ export type PricingUnitRates = {
 export const DEFAULT_PRICING_UNIT_RATES: PricingUnitRates = Object.freeze({
   parseStandard: 0.015,
   parseComplex: 0.03,
+  parseR1: 0.01,
   advancedChart: 0.06,
   classify: 0.0075,
   extract: 0.02,
@@ -367,7 +375,11 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
       ) ?? {})
     : {};
   rejectUnknownKeys(parseEnhance, ["agentic"], "pipeline.parse.enhance");
-  rejectUnknownKeys(parseSettings, ["page_range"], "pipeline.parse.settings");
+  rejectUnknownKeys(
+    parseSettings,
+    ["page_range", "model", "return_ocr_data"],
+    "pipeline.parse.settings",
+  );
   rejectUnknownKeys(
     extractSettings,
     ["deep_extract", "optimize_for_latency", "include_images", "page_range"],
@@ -393,16 +405,18 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
   }
   const parseAgentic = Array.isArray(rawParseAgentic) ? rawParseAgentic : [];
   let parseAdvancedChart = false;
+  let parseHasCustomPrompt = false;
+  let parseHasPromptlessAgenticScope = false;
   for (const [index, rawMode] of parseAgentic.entries()) {
     if (!isRecord(rawMode)) {
       throw new Error(`Parse enhance.agentic[${index}] must be an object.`);
     }
     rejectUnknownKeys(
       rawMode,
-      ["scope", "mode", "advanced_chart_agent"],
+      ["scope", "mode", "prompt", "advanced_chart_agent"],
       `Parse enhance.agentic[${index}]`,
     );
-    for (const key of ["scope", "mode"] as const) {
+    for (const key of ["scope", "mode", "prompt"] as const) {
       const value = rawMode[key];
       if (value !== undefined && (typeof value !== "string" || !value.trim())) {
         throw new Error(`Parse enhance.agentic[${index}].${key} must be a nonempty string.`);
@@ -427,6 +441,9 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
         `Parse enhance.agentic[${index}].advanced_chart_agent requires scope "figure".`,
       );
     }
+    parseHasCustomPrompt ||= typeof rawMode.prompt === "string";
+    parseHasPromptlessAgenticScope ||=
+      rawMode.prompt === undefined && advancedChart !== true;
     parseAdvancedChart ||= advancedChart === true;
   }
 
@@ -438,6 +455,21 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
   ) {
     throw new Error('Parse queue_priority must be "auto" or "batch" when supplied.');
   }
+
+  const rawParseModel = parseSettings.model;
+  if (
+    rawParseModel !== undefined &&
+    rawParseModel !== "legacy" &&
+    rawParseModel !== "r-1"
+  ) {
+    throw new Error('Parse settings.model must be "legacy" or "r-1" when supplied.');
+  }
+  const parseModel: ParsePricingModel = rawParseModel === "r-1" ? "r-1" : "legacy";
+  const parseReturnOcrData = optionalBoolean(
+    parseSettings,
+    "return_ocr_data",
+    "Parse settings.return_ocr_data",
+  );
 
   const deepExtract = optionalBoolean(
     extractSettings,
@@ -476,6 +508,14 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
       : extract != null || split != null
         ? "bundled"
         : "standalone";
+  if (parseModel === "r-1" && parseMode !== "standalone") {
+    throw new Error('Parse settings.model "r-1" is available only for standalone Parse estimates.');
+  }
+  if (parseModel === "r-1" && parseHasPromptlessAgenticScope) {
+    throw new Error(
+      "r-1 Agentic scopes without prompts cannot be estimated. Add a prompt, remove the scope, or select Legacy Parse.",
+    );
+  }
   if (parseQueuePriority === "batch" && parseMode !== "standalone") {
     throw new Error("Parse queue_priority is available only for standalone Parse estimates.");
   }
@@ -489,7 +529,7 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
       "likely_complex_parse_share is available only for standalone Parse estimates.",
     );
   }
-  const parseComplexShare =
+  const normalizedParseComplexShare =
     parseMode === "standalone"
       ? finiteNumber(
           assumptions.likely_complex_parse_share,
@@ -498,6 +538,7 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
           { minimum: 0, maximum: 1 },
         )
       : 0.5;
+  const parseComplexShare = parseModel === "r-1" ? 0 : normalizedParseComplexShare;
 
   const hasAdvancedChartCountsField = Object.hasOwn(
     assumptions,
@@ -689,13 +730,27 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
   ) {
     throw new Error("lumos_assumptions.unpriced_cost_factors must be a short list of names.");
   }
-  const unpricedCostFactors = [...rawUnpricedCostFactors];
+  const unpricedCostFactors = rawUnpricedCostFactors.filter(
+    (factor) => parseModel !== "r-1" || factor !== "parse.advanced_chart_count",
+  );
   if (includeImages === true) unpricedCostFactors.push("extract.include_images");
   if (hasExtract && (!hasEstimatedFields || fieldsPerPage > 100)) {
     unpricedCostFactors.push("extract.field_density");
   }
+  if (parseMode === "standalone" && parseModel === "r-1") {
+    if (parseHasCustomPrompt) {
+      unpricedCostFactors.push("parse.r1_agentic_prompt");
+    }
+    if (parseReturnOcrData === true) {
+      unpricedCostFactors.push("parse.r1_return_ocr_data");
+    }
+    if (parseAdvancedChart) {
+      unpricedCostFactors.push("parse.r1_advanced_chart");
+    }
+  }
   if (
     parseMode === "standalone" &&
+    parseModel === "legacy" &&
     parseAdvancedChart &&
     parseAdvancedChartCounts == null
   ) {
@@ -737,9 +792,10 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
     documents,
     pipeline: {
       parseMode,
+      parseModel,
       parsePageRanges,
       parseCostMultiplier:
-        parseAgentic.length > 0
+        parseModel === "legacy" && parseAgentic.length > 0
           ? FIXED_PRICING_RULES.agenticParseMultiplier
           : 1,
       parseBatchDiscount:
@@ -795,16 +851,28 @@ export function estimatePipeline(
 
   const parseDiscountMultiplier = 1 - pipeline.parseBatchDiscount;
   const parsePageLow =
-    parsePages * rates.parseStandard * pipeline.parseCostMultiplier;
+    pipeline.parseModel === "r-1"
+      ? parsePages * rates.parseR1
+      : parsePages * rates.parseStandard * pipeline.parseCostMultiplier;
   const parsePageLikely =
-    parsePages *
-    ((1 - pipeline.parseComplexShare) * rates.parseStandard +
-      pipeline.parseComplexShare * rates.parseComplex) *
-    pipeline.parseCostMultiplier;
+    pipeline.parseModel === "r-1"
+      ? parsePages * rates.parseR1
+      : parsePages *
+        ((1 - pipeline.parseComplexShare) * rates.parseStandard +
+          pipeline.parseComplexShare * rates.parseComplex) *
+        pipeline.parseCostMultiplier;
   const parsePageHigh =
-    parsePages * rates.parseComplex * pipeline.parseCostMultiplier;
-  const parseChartLikely = pipeline.parseAdvancedChartCounts?.likely ?? 0;
-  const parseChartMaximum = pipeline.parseAdvancedChartCounts?.maximum ?? 0;
+    pipeline.parseModel === "r-1"
+      ? parsePages * rates.parseR1
+      : parsePages * rates.parseComplex * pipeline.parseCostMultiplier;
+  const parseChartLikely =
+    pipeline.parseModel === "legacy"
+      ? (pipeline.parseAdvancedChartCounts?.likely ?? 0)
+      : 0;
+  const parseChartMaximum =
+    pipeline.parseModel === "legacy"
+      ? (pipeline.parseAdvancedChartCounts?.maximum ?? 0)
+      : 0;
   const parseLow = parsePageLow * parseDiscountMultiplier;
   const parseLikely =
     (parsePageLikely + parseChartLikely * rates.advancedChart) *
@@ -950,12 +1018,14 @@ export function estimatePipeline(
     decision,
     totalPages,
     parseMode: pipeline.parseMode,
+    parseModel: pipeline.parseModel,
     parsePages,
     parseCostMultiplier: pipeline.parseCostMultiplier,
     parseBatchDiscount: pipeline.parseBatchDiscount,
     parseLikelyComplexShare: pipeline.parseComplexShare,
     parseAdvancedChart: pipeline.parseAdvancedChart,
-    parseAdvancedChartCounts: pipeline.parseAdvancedChartCounts
+    parseAdvancedChartCounts:
+      pipeline.parseModel === "legacy" && pipeline.parseAdvancedChartCounts
       ? {
           low: 0,
           likely: pipeline.parseAdvancedChartCounts.likely,
