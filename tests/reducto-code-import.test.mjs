@@ -541,7 +541,7 @@ test("treats embedding-optimized Parse retrieval as included in bundled Extract 
   assert.doesNotMatch(result.warnings.join(" "), /bundled Parse enhancements/i);
 });
 
-test("treats advanced charts as included when Parse is bundled downstream", () => {
+test("keeps Advanced Chart as a separately priced Extract add-on", () => {
   const parse = JSON.parse(RICH_PARSE_CONFIG);
   parse.enhance.agentic[0].advanced_chart_agent = true;
   const result = importReductoCode(
@@ -553,8 +553,31 @@ test("treats advanced charts as included when Parse is bundled downstream", () =
   assert.deepEqual(result.pipeline.parse, {});
   assert.deepEqual(result.pipeline.lumos_assumptions.unpriced_cost_factors, [
     "extract.field_density",
+    "extract.advanced_chart_count",
   ]);
-  assert.doesNotMatch(result.warnings.join(" "), /advanced chart/i);
+  assert.match(result.warnings.join(" "), /advanced chart.*unpriced/i);
+  assert.equal(
+    result.pipeline.extract.parsing.enhance.agentic[0].advanced_chart_agent,
+    true,
+  );
+});
+
+test("preserves OCR return and prompted processing as Extract add-ons", () => {
+  const extract = JSON.parse(DEEP_EXTRACT_CONFIG);
+  extract.parsing = {
+    settings: { return_ocr_data: true },
+    enhance: {
+      agentic: [{ scope: "table", prompt: "Read the requested region." }],
+    },
+  };
+  const result = importReductoCode(JSON.stringify(extract));
+
+  assert.equal(result.applicable, true);
+  assert.equal(result.pipeline.extract.parsing.settings.return_ocr_data, true);
+  assert.deepEqual(result.pipeline.extract.parsing.enhance.agentic, [
+    { scope: "table", prompt: "Read the requested region." },
+  ]);
+  assert.doesNotMatch(result.warnings.join(" "), /OCR.*unpriced|prompt.*unpriced/i);
 });
 
 test("imports all-page and ranged nested Split parsing", () => {
@@ -568,7 +591,14 @@ test("imports all-page and ranged nested Split parsing", () => {
   const ranged = importReductoCode(JSON.stringify(split));
   assert.equal(ranged.applicable, true);
   assert.deepEqual(ranged.pipeline.split.parsing, {
-    settings: { page_range: { start: 1, end: 5 } },
+    enhance: {
+      agentic: [
+        { scope: "figure" },
+        { scope: "table", mode: "auto" },
+        { scope: "text" },
+      ],
+    },
+    settings: { page_range: { start: 1, end: 5 }, return_ocr_data: true },
   });
   assert.match(ranged.warnings.join(" "), /Parse page range.*downstream Split/i);
 });

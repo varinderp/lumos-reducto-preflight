@@ -18,17 +18,28 @@ function smallUsageResponse(payload: JsonObject) {
   const result = payload.result as JsonObject | undefined;
   const pickUsage = (value: unknown) =>
     value && typeof value === "object" ? (value as JsonObject).usage ?? null : null;
+  const pickUsageBreakdown = (value: unknown) =>
+    value && typeof value === "object"
+      ? (value as JsonObject).usage_breakdown ?? null
+      : null;
+  const mapStep = (value: unknown, picker: (item: unknown) => unknown) =>
+    Array.isArray(value) ? value.map((item) => picker(item)) : picker(value);
 
   return {
     job_id: payload.job_id ?? null,
     usage: payload.usage ?? null,
+    usage_breakdown: payload.usage_breakdown ?? null,
     step_usage: {
       parse: pickUsage(result?.parse),
-      extract: Array.isArray(result?.extract)
-        ? result.extract.map((item) => pickUsage(item))
-        : pickUsage(result?.extract),
+      extract: mapStep(result?.extract, pickUsage),
       split: pickUsage(result?.split),
       edit: pickUsage(result?.edit),
+    },
+    step_usage_breakdown: {
+      parse: pickUsageBreakdown(result?.parse),
+      extract: mapStep(result?.extract, pickUsageBreakdown),
+      split: pickUsageBreakdown(result?.split),
+      edit: pickUsageBreakdown(result?.edit),
     },
   };
 }
@@ -55,7 +66,14 @@ export async function POST(request: Request) {
     }
 
     const authorization = { Authorization: `Bearer ${apiKey}` };
-    const jobs: Array<{ document: string; job_id: unknown; usage: unknown; step_usage: unknown }> = [];
+    const jobs: Array<{
+      document: string;
+      job_id: unknown;
+      usage: unknown;
+      usage_breakdown: unknown;
+      step_usage: unknown;
+      step_usage_breakdown: unknown;
+    }> = [];
 
     for (const file of files) {
       const uploadBody = new FormData();

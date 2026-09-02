@@ -64,6 +64,57 @@ test("the builder requires at least one operation", async () => {
   assert.match(result.errors.operations, /Choose at least one endpoint/);
 });
 
+test("the builder maps endpoint parsing add-ons, chart counts, and jobid context", async () => {
+  const {
+    DEFAULT_MANUAL_PIPELINE_DRAFT,
+    manualDraftProcessingContext,
+    manualDraftToPipeline,
+    pipelineToManualDraft,
+  } = await loadManualPipeline();
+  const draft = clone(DEFAULT_MANUAL_PIPELINE_DRAFT);
+  Object.assign(draft.extract.parsingAddOns, {
+    returnOcrData: true,
+    promptedBlocks: true,
+    advancedChart: true,
+    chartCountsEnabled: true,
+    likelyChartCount: "4",
+    maximumChartCount: "9",
+  });
+  draft.split.mode = "deep";
+  Object.assign(draft.split.parsingAddOns, {
+    returnOcrData: true,
+    inputKind: "jobid",
+  });
+
+  const result = manualDraftToPipeline(draft);
+  assert.equal(result.ok, true);
+  assert.equal(result.pipeline.extract.parsing.settings.return_ocr_data, true);
+  assert.equal(
+    result.pipeline.extract.parsing.enhance.agentic[0].advanced_chart_agent,
+    true,
+  );
+  assert.deepEqual(
+    result.pipeline.lumos_assumptions.advanced_chart_counts_by_endpoint.extract,
+    { likely: 4, maximum: 9 },
+  );
+  assert.equal(
+    result.pipeline.lumos_assumptions.prompted_blocks_or_custom_regions.extract,
+    true,
+  );
+  assert.deepEqual(manualDraftProcessingContext(draft), { split_input: "jobid" });
+
+  const hydrated = pipelineToManualDraft(
+    result.pipeline,
+    result.configurations,
+    manualDraftProcessingContext(draft),
+  );
+  assert.equal(hydrated.extract.parsingAddOns.returnOcrData, true);
+  assert.equal(hydrated.extract.parsingAddOns.promptedBlocks, true);
+  assert.equal(hydrated.extract.parsingAddOns.advancedChart, true);
+  assert.equal(hydrated.extract.parsingAddOns.likelyChartCount, "4");
+  assert.equal(hydrated.split.parsingAddOns.inputKind, "jobid");
+});
+
 test("standalone Parse maps ranges, agentic, batch, chart counts, and percentages", async () => {
   const { DEFAULT_MANUAL_PIPELINE_DRAFT, manualDraftToPipeline } = await loadManualPipeline();
   const draft = clone(DEFAULT_MANUAL_PIPELINE_DRAFT);
@@ -742,13 +793,15 @@ test("bundled nested Parse scopes hydrate while the original endpoint config rem
     configurations.extract.parsing.enhance.agentic,
   );
   assert.deepEqual(reapplied.pipeline.parse, {});
+  assert.equal(reapplied.pipeline.extract.parsing.enhance.agentic[0].advanced_chart_agent, true);
 
-  draft.parse.mode = "standard";
-  draft.parse.advancedChart = false;
-  draft.parse.agenticScopes = { text: false, table: false, figure: false };
+  draft.extract.parsingAddOns.advancedChart = false;
   const disabled = manualDraftToPipeline(draft);
   assert.equal(disabled.ok, true);
-  assert.deepEqual(disabled.configurations.extract.parsing.enhance.agentic, []);
+  assert.deepEqual(disabled.configurations.extract.parsing.enhance.agentic, [
+    { scope: "figure" },
+    { scope: "table", mode: "auto", prompt: "Read every table" },
+  ]);
 });
 
 test("review preserves duplicate agentic entries, explicit auto priority, and __proto__ schema fields", async () => {

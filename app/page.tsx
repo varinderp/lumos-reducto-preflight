@@ -19,15 +19,18 @@ import {
   RATE_CARD,
   R1_RATE_CARD,
   type PricingUnitRates,
+  type PublicEstimateRequest,
   type PublicPipeline,
 } from "@/lib/pricing";
 import {
   DEFAULT_MANUAL_PIPELINE_DRAFT,
   manualErrorEndpoint,
+  manualDraftProcessingContext,
   manualDraftToPipeline,
   pipelineToManualDraft,
   type ManualEndpoint,
   type ManualPageSelectionDraft,
+  type ManualParsingAddOnDraft,
   type ManualPipelineDraft,
   type ManualPipelineErrors,
 } from "@/lib/manual-pipeline";
@@ -59,7 +62,18 @@ const RATE_GROUPS = [
       { key: "parseStandard", label: "Legacy Parse — Standard", perThousand: true },
       { key: "parseComplex", label: "Legacy Parse — Complex", perThousand: true },
       { key: "parseR1", label: "r‑1 Parse (Beta)", perThousand: true },
+    ],
+  },
+  {
+    name: "Parsing add-ons",
+    fields: [
       { key: "advancedChart", label: "Advanced Chart", perThousand: false },
+      { key: "ocrDataReturn", label: "OCR data return", perThousand: true },
+      {
+        key: "promptedBlocks",
+        label: "Prompted blocks / custom regions",
+        perThousand: true,
+      },
     ],
   },
   {
@@ -198,6 +212,7 @@ function cloneManualDraft(draft: ManualPipelineDraft): ManualPipelineDraft {
     classify: { ...draft.classify },
     extract: {
       ...draft.extract,
+      parsingAddOns: { ...draft.extract.parsingAddOns },
       pageSelection: {
         ...draft.extract.pageSelection,
         ranges: draft.extract.pageSelection.ranges.map((range) => ({ ...range })),
@@ -205,6 +220,7 @@ function cloneManualDraft(draft: ManualPipelineDraft): ManualPipelineDraft {
     },
     split: {
       ...draft.split,
+      parsingAddOns: { ...draft.split.parsingAddOns },
       pageSelection: {
         ...draft.split.pageSelection,
         ranges: draft.split.pageSelection.ranges.map((range) => ({ ...range })),
@@ -399,6 +415,122 @@ function PageSelectionEditor({
   );
 }
 
+function ParsingAddOnControls({
+  endpoint,
+  value,
+  errors,
+  onChange,
+}: {
+  endpoint: "extract" | "split";
+  value: ManualParsingAddOnDraft;
+  errors: ManualPipelineErrors;
+  onChange: (value: ManualParsingAddOnDraft) => void;
+}) {
+  const endpointLabel = endpoint === "extract" ? "Extract" : "Split";
+  const likelyError = errors[`${endpoint}.parsingAddOns.likelyChartCount`];
+  const maximumError = errors[`${endpoint}.parsingAddOns.maximumChartCount`];
+  const reusesParse = value.inputKind === "jobid";
+  return (
+    <fieldset className="builder-section compact-builder-section">
+      <legend>Parsing add-ons</legend>
+      <label className="check-field">
+        <input
+          type="checkbox"
+          checked={reusesParse}
+          onChange={(event) =>
+            onChange({ ...value, inputKind: event.target.checked ? "jobid" : "document" })
+          }
+        />
+        Input reuses an existing Parse result (<code>jobid://</code>)
+      </label>
+      {reusesParse ? (
+        <p className="aside">
+          Parse add-ons were billed on the original job and are not charged again by {endpointLabel}.
+        </p>
+      ) : (
+        <div className="nested-settings">
+          <div className="check-grid">
+            <label className="check-field">
+              <input
+                type="checkbox"
+                checked={value.returnOcrData}
+                onChange={(event) => onChange({ ...value, returnOcrData: event.target.checked })}
+              />
+              Return OCR data
+            </label>
+            <label className="check-field">
+              <input
+                type="checkbox"
+                checked={value.promptedBlocks}
+                onChange={(event) => onChange({ ...value, promptedBlocks: event.target.checked })}
+              />
+              Prompted blocks or custom regions
+            </label>
+            <label className="check-field">
+              <input
+                type="checkbox"
+                checked={value.advancedChart}
+                onChange={(event) => onChange({ ...value, advancedChart: event.target.checked })}
+              />
+              Advanced Chart Agent
+            </label>
+          </div>
+          {value.advancedChart && (
+            <div className="nested-settings">
+              <label className="check-field">
+                <input
+                  type="checkbox"
+                  checked={value.chartCountsEnabled}
+                  onChange={(event) =>
+                    onChange({ ...value, chartCountsEnabled: event.target.checked })
+                  }
+                />
+                Add expected chart counts
+              </label>
+              {value.chartCountsEnabled ? (
+                <div className="form-grid">
+                  <label className="number-field">
+                    Likely charts
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      inputMode="numeric"
+                      value={value.likelyChartCount}
+                      aria-invalid={likelyError ? "true" : undefined}
+                      onChange={(event) =>
+                        onChange({ ...value, likelyChartCount: event.target.value })
+                      }
+                    />
+                    {likelyError && <span className="field-error">{likelyError}</span>}
+                  </label>
+                  <label className="number-field">
+                    Maximum charts
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      inputMode="numeric"
+                      value={value.maximumChartCount}
+                      aria-invalid={maximumError ? "true" : undefined}
+                      onChange={(event) =>
+                        onChange({ ...value, maximumChartCount: event.target.value })
+                      }
+                    />
+                    {maximumError && <span className="field-error">{maximumError}</span>}
+                  </label>
+                </div>
+              ) : (
+                <p className="aside">The known subtotal will exclude the detected-chart charge.</p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </fieldset>
+  );
+}
+
 function makeExampleDocuments(): DocumentRow[] {
   return SIMULATOR_EXAMPLE_REQUEST.documents.map(({ name, pages }, index) => ({
     id: `example-${index}`,
@@ -456,13 +588,12 @@ function importSummary(result: ReductoCodeImportResult) {
 
 function unpricedFactorLabel(factor: string, advancedChartRate: string) {
   if (factor === "extract.include_images") return "Extract image context";
-  if (factor === "parse.advanced_chart_count") {
-    return `the $${advancedChartRate}-per-detected-chart charge because no chart count was provided`;
+  if (factor.endsWith(".advanced_chart_count")) {
+    const endpoint = factor.split(".")[0];
+    const label = endpoint.charAt(0).toUpperCase() + endpoint.slice(1);
+    return `${label}'s $${advancedChartRate}-per-detected-chart charge because no chart count was provided`;
   }
   if (factor === "extract.field_density") return "a possible dense-field surcharge";
-  if (factor === "parse.r1_agentic_prompt") return "r‑1 custom-prompt pricing";
-  if (factor === "parse.r1_return_ocr_data") return "r‑1 OCR-return pricing";
-  if (factor === "parse.r1_advanced_chart") return "r‑1 Advanced Chart pricing";
   return factor;
 }
 
@@ -522,6 +653,9 @@ export default function Home() {
   );
   const [documents, setDocuments] = useState<DocumentRow[]>([]);
   const [pipeline, setPipeline] = useState<PublicPipeline>(DEFAULT_PIPELINE);
+  const [appliedProcessingContext, setAppliedProcessingContext] = useState<
+    PublicEstimateRequest["processing_context"]
+  >(undefined);
   const [manualDraft, setManualDraft] = useState<ManualPipelineDraft>(() =>
     cloneManualDraft(DEFAULT_MANUAL_PIPELINE_DRAFT),
   );
@@ -603,9 +737,15 @@ export default function Home() {
         rates.add("parseComplex");
         const agenticModes = pipeline.parse?.enhance?.agentic ?? [];
         if (agenticModes.length > 0) rules.add("agentic");
-        if (agenticModes.some((mode) => mode.advanced_chart_agent === true)) {
-          rates.add("advancedChart");
-        }
+      }
+      const agenticModes = pipeline.parse?.enhance?.agentic ?? [];
+      if (pipeline.parse?.settings?.return_ocr_data) rates.add("ocrDataReturn");
+      if (
+        agenticModes.some((mode) => typeof mode.prompt === "string") ||
+        pipeline.lumos_assumptions?.prompted_blocks_or_custom_regions?.parse
+      ) rates.add("promptedBlocks");
+      if (agenticModes.some((mode) => mode.advanced_chart_agent === true)) {
+        rates.add("advancedChart");
       }
       if (pipeline.parse?.queue_priority === "batch") rules.add("batch");
     }
@@ -620,9 +760,31 @@ export default function Home() {
         rates.add("extract");
       }
       if (pipeline.extract.settings?.optimize_for_latency) rules.add("latency");
+      if (appliedProcessingContext?.extract_input !== "jobid") {
+        const modes = pipeline.extract.parsing?.enhance?.agentic ?? [];
+        if (pipeline.extract.parsing?.settings?.return_ocr_data) rates.add("ocrDataReturn");
+        if (
+          modes.some((mode) => typeof mode.prompt === "string") ||
+          pipeline.lumos_assumptions?.prompted_blocks_or_custom_regions?.extract
+        ) rates.add("promptedBlocks");
+        if (modes.some((mode) => mode.advanced_chart_agent === true)) {
+          rates.add("advancedChart");
+        }
+      }
     }
     if (pipeline.split != null) {
       rates.add(pipeline.split.settings?.deep_split ? "deepSplit" : "split");
+      if (appliedProcessingContext?.split_input !== "jobid") {
+        const modes = pipeline.split.parsing?.enhance?.agentic ?? [];
+        if (pipeline.split.parsing?.settings?.return_ocr_data) rates.add("ocrDataReturn");
+        if (
+          modes.some((mode) => typeof mode.prompt === "string") ||
+          pipeline.lumos_assumptions?.prompted_blocks_or_custom_regions?.split
+        ) rates.add("promptedBlocks");
+        if (modes.some((mode) => mode.advanced_chart_agent === true)) {
+          rates.add("advancedChart");
+        }
+      }
     }
     if (pipeline.edit != null) {
       rates.add("edit");
@@ -631,7 +793,7 @@ export default function Home() {
       }
     }
     return { rates, rules };
-  }, [pipeline, pipelineDraftState]);
+  }, [appliedProcessingContext, pipeline, pipelineDraftState]);
 
   const estimateResult = useMemo(() => {
     if (!documents.length || hasSpreadsheet || pipelineDraftState !== "applied") {
@@ -642,6 +804,9 @@ export default function Home() {
         documents: documents.map(({ name, pages }) => ({ name, pages })),
         pipeline,
         policy: { max_total_usd: budget },
+        ...(appliedProcessingContext
+          ? { processing_context: appliedProcessingContext }
+          : {}),
       });
       return { estimate: estimatePipeline(normalized, appliedRates), error: "" };
     } catch (error) {
@@ -650,7 +815,15 @@ export default function Home() {
         error: error instanceof Error ? error.message : "The estimate inputs are invalid.",
       };
     }
-  }, [documents, pipeline, budget, hasSpreadsheet, pipelineDraftState, appliedRates]);
+  }, [
+    appliedProcessingContext,
+    documents,
+    pipeline,
+    budget,
+    hasSpreadsheet,
+    pipelineDraftState,
+    appliedRates,
+  ]);
   const estimate = estimateResult.estimate;
 
   const publicEstimateResult = useMemo(() => {
@@ -662,6 +835,9 @@ export default function Home() {
         documents: documents.map(({ name, pages }) => ({ name, pages })),
         pipeline,
         policy: { max_total_usd: budget },
+        ...(appliedProcessingContext
+          ? { processing_context: appliedProcessingContext }
+          : {}),
       });
       return { estimate: estimatePipeline(normalized), error: "" };
     } catch (error) {
@@ -670,7 +846,14 @@ export default function Home() {
         error: error instanceof Error ? error.message : "The estimate inputs are invalid.",
       };
     }
-  }, [documents, pipeline, budget, hasSpreadsheet, pipelineDraftState]);
+  }, [
+    appliedProcessingContext,
+    documents,
+    pipeline,
+    budget,
+    hasSpreadsheet,
+    pipelineDraftState,
+  ]);
   const apiEstimate = isCustomRateCard ? publicEstimateResult.estimate : estimate;
   const hasEstimateRange = estimate != null && estimate.low !== estimate.high;
   const configuredMode =
@@ -685,9 +868,12 @@ export default function Home() {
             documents: documents.map(({ name, pages }) => ({ name, pages })),
             pipeline,
             policy: { max_total_usd: budget },
+            ...(appliedProcessingContext
+              ? { processing_context: appliedProcessingContext }
+              : {}),
           }
         : null,
-    [documents, pipeline, budget, pipelineDraftState],
+    [appliedProcessingContext, documents, pipeline, budget, pipelineDraftState],
   );
 
   const apiResponse = useMemo(
@@ -712,7 +898,11 @@ export default function Home() {
               extract_likely_usd: Number(apiEstimate.extractLikely.toFixed(4)),
               extract_high_usd: Number(apiEstimate.extractHigh.toFixed(4)),
               split_usd: Number(apiEstimate.splitCost.toFixed(4)),
+              split_low_usd: Number(apiEstimate.splitLow.toFixed(4)),
+              split_likely_usd: Number(apiEstimate.splitLikely.toFixed(4)),
+              split_high_usd: Number(apiEstimate.splitHigh.toFixed(4)),
               edit_usd: Number(apiEstimate.editCost.toFixed(4)),
+              parsing_add_ons: apiEstimate.parsingAddOns,
             },
             usage: {
               documents: documents.length,
@@ -724,6 +914,21 @@ export default function Home() {
               extract_pages_priced: apiEstimate.extractPages,
               split_pages_priced: apiEstimate.splitPages,
               extract_cost_multiplier: apiEstimate.extractCostMultiplier,
+              ocr_pages: {
+                parse: apiEstimate.parsingAddOns.parse.ocr_pages,
+                extract: apiEstimate.parsingAddOns.extract.ocr_pages,
+                split: apiEstimate.parsingAddOns.split.ocr_pages,
+              },
+              prompted_pages: {
+                parse: apiEstimate.parsingAddOns.parse.prompted_pages,
+                extract: apiEstimate.parsingAddOns.extract.prompted_pages,
+                split: apiEstimate.parsingAddOns.split.prompted_pages,
+              },
+              charts: {
+                parse: apiEstimate.parsingAddOns.parse.charts,
+                extract: apiEstimate.parsingAddOns.extract.charts,
+                split: apiEstimate.parsingAddOns.split.charts,
+              },
             },
             assumptions_used: {
               ...(apiEstimate.parseMode === "standalone" && apiEstimate.parseModel === "legacy"
@@ -759,6 +964,25 @@ export default function Home() {
     [apiEstimate, documents.length, estimateResult.error, hasSpreadsheet, pipeline, pipelineDraftState],
   );
 
+  const includedAddOnBreakdown = estimate
+    ? (["parse", "extract", "split"] as const).flatMap((endpoint) => {
+        const label = endpoint.charAt(0).toUpperCase() + endpoint.slice(1);
+        const addOns = estimate.parsingAddOns[endpoint];
+        return [
+          addOns.ocr_pages > 0 ? `${label} OCR ${money(addOns.ocr_usd)}` : null,
+          addOns.prompted_pages > 0
+            ? `${label} prompted processing ${money(addOns.prompted_usd)}`
+            : null,
+          addOns.charts.high > 0
+            ? `${label} charts ${
+                addOns.chart_likely_usd === addOns.chart_high_usd
+                  ? money(addOns.chart_likely_usd)
+                  : `${money(addOns.chart_likely_usd)}–${money(addOns.chart_high_usd)}`
+              }`
+            : null,
+        ].filter((item): item is string => item !== null);
+      })
+    : [];
   const estimateBreakdown = estimate
     ? [
         estimate.parseMode === "standalone"
@@ -777,9 +1001,16 @@ export default function Home() {
             } across ${estimate.extractPages} priced pages`
           : null,
         pipeline.split != null
-          ? `Split ${money(estimate.splitCost)} across ${estimate.splitPages} priced pages`
+          ? `Split ${
+              estimate.splitLow === estimate.splitHigh
+                ? money(estimate.splitLikely)
+                : `${money(estimate.splitLow)}–${money(estimate.splitHigh)}`
+            } across ${estimate.splitPages} priced pages`
           : null,
         pipeline.edit != null ? `Edit ${money(estimate.editCost)}` : null,
+        includedAddOnBreakdown.length > 0
+          ? `Add-ons included above: ${includedAddOnBreakdown.join("; ")}`
+          : null,
       ].filter((item): item is string => item !== null)
     : [];
   const parsingNote =
@@ -883,6 +1114,7 @@ export default function Home() {
       }
       return;
     }
+    const processingContext = manualDraftProcessingContext(manualDraft);
 
     let validatedUnpricedCostFactors: string[] = [];
     try {
@@ -891,6 +1123,7 @@ export default function Home() {
           ? documents.map(({ name, pages }) => ({ name, pages }))
           : [{ name: "validation.pdf", pages: 1_000_000 }],
         pipeline: result.pipeline,
+        ...(processingContext ? { processing_context: processingContext } : {}),
       });
       validatedUnpricedCostFactors = estimatePipeline(
         normalized,
@@ -915,6 +1148,7 @@ export default function Home() {
     }
 
     setPipeline(result.pipeline);
+    setAppliedProcessingContext(processingContext);
     setManualDraft((current) => ({
       ...current,
       assumptions: {
@@ -950,6 +1184,7 @@ export default function Home() {
         pipelineToManualDraft(codeImport.pipeline, codeImport.configurations),
       );
       setPipeline(codeImport.pipeline);
+      setAppliedProcessingContext(undefined);
       setManualDraft(hydratedDraft);
       setManualEndpointTab(firstEnabledEndpoint(hydratedDraft));
       setManualErrors({});
@@ -1053,6 +1288,7 @@ export default function Home() {
     if (rateCardDialog.current?.open) rateCardDialog.current.close();
     setDocuments(makeExampleDocuments());
     setPipeline(examplePipeline);
+    setAppliedProcessingContext(undefined);
     setManualDraft(cloneManualDraft(exampleDraft));
     setManualErrors({});
     setPipelineDraftState("applied");
@@ -1080,6 +1316,7 @@ export default function Home() {
     if (dialog?.open) dialog.close();
     setDocuments([]);
     setPipeline(DEFAULT_PIPELINE);
+    setAppliedProcessingContext(undefined);
     setManualDraft(cloneManualDraft(DEFAULT_MANUAL_PIPELINE_DRAFT));
     setManualErrors({});
     setPipelineDraftState("unconfigured");
@@ -1463,7 +1700,6 @@ export default function Home() {
                                           ...current.parse,
                                           pricingModel: "r-1",
                                           mode: "standard",
-                                          advancedChart: false,
                                         },
                                       }))
                                     }
@@ -1483,8 +1719,8 @@ export default function Home() {
                             </div>
                             {manualDraft.parse.pricingModel === "r-1" && (
                               <p className="parse-model-note">
-                                Preview pricing at $10 per 1,000 pages. Advanced add-ons remain
-                                excluded from this Beta estimate.
+                                Base pricing is $10 per 1,000 pages. Optional parsing add-ons are
+                                priced separately below.
                               </p>
                             )}
                           </fieldset>
@@ -1623,12 +1859,72 @@ export default function Home() {
                               }))
                             }
                           />
+                          <fieldset className="builder-section compact-builder-section">
+                            <legend>Parsing add-ons</legend>
+                            <div className="check-grid">
+                              <label className="check-field">
+                                <input
+                                  type="checkbox"
+                                  checked={manualDraft.parse.returnOcrData === true}
+                                  onChange={(event) =>
+                                    updateManualDraft((current) => ({
+                                      ...current,
+                                      parse: {
+                                        ...current.parse,
+                                        returnOcrData: event.target.checked,
+                                      },
+                                    }))
+                                  }
+                                />
+                                Return OCR data
+                              </label>
+                              <label className="check-field">
+                                <input
+                                  type="checkbox"
+                                  checked={manualDraft.parse.promptedBlocks}
+                                  onChange={(event) =>
+                                    updateManualDraft((current) => ({
+                                      ...current,
+                                      parse: {
+                                        ...current.parse,
+                                        promptedBlocks: event.target.checked,
+                                      },
+                                    }))
+                                  }
+                                />
+                                Prompted blocks or custom regions
+                              </label>
+                              {manualDraft.parse.pricingModel === "r-1" && (
+                                <label className="check-field">
+                                  <input
+                                    type="checkbox"
+                                    checked={manualDraft.parse.advancedChart}
+                                    onChange={(event) =>
+                                      updateManualDraft((current) => ({
+                                        ...current,
+                                        parse: {
+                                          ...current.parse,
+                                          advancedChart: event.target.checked,
+                                          agenticScopes: event.target.checked
+                                            ? { ...current.parse.agenticScopes, figure: true }
+                                            : current.parse.agenticScopes,
+                                        },
+                                      }))
+                                    }
+                                  />
+                                  Advanced Chart Agent
+                                </label>
+                              )}
+                            </div>
+                          </fieldset>
                         </div>
 
-                        {manualDraft.parse.pricingModel === "legacy" && (
+                        {(manualDraft.parse.pricingModel === "legacy" ||
+                          manualDraft.parse.advancedChart) && (
                           <div className="config-group lumos-config-group">
                             <h5>Additional inputs</h5>
-                          <label className="number-field">
+                          {manualDraft.parse.pricingModel === "legacy" && (
+                            <label className="number-field">
                             Expected Complex page share
                             <span>
                               <input
@@ -1656,7 +1952,8 @@ export default function Home() {
                                 {manualErrors["assumptions.complexSharePercent"]}
                               </span>
                             )}
-                          </label>
+                            </label>
+                          )}
                           {manualDraft.parse.advancedChart && (
                             <div className="nested-settings">
                               <label className="check-field">
@@ -1923,6 +2220,17 @@ export default function Home() {
                               }))
                             }
                           />
+                          <ParsingAddOnControls
+                            endpoint="extract"
+                            value={manualDraft.extract.parsingAddOns}
+                            errors={manualErrors}
+                            onChange={(parsingAddOns) =>
+                              updateManualDraft((current) => ({
+                                ...current,
+                                extract: { ...current.extract, parsingAddOns },
+                              }))
+                            }
+                          />
                         </div>
 
                         <div className="config-group lumos-config-group">
@@ -2078,6 +2386,17 @@ export default function Home() {
                             updateManualDraft((current) => ({
                               ...current,
                               split: { ...current.split, pageSelection },
+                            }))
+                          }
+                        />
+                        <ParsingAddOnControls
+                          endpoint="split"
+                          value={manualDraft.split.parsingAddOns}
+                          errors={manualErrors}
+                          onChange={(parsingAddOns) =>
+                            updateManualDraft((current) => ({
+                              ...current,
+                              split: { ...current.split, parsingAddOns },
                             }))
                           }
                         />
@@ -2522,6 +2841,13 @@ export default function Home() {
                 <td><code>policy.max_total_usd</code></td>
                 <td>Optional. Maximum acceptable job cost in USD. Defaults to <code>10</code>.</td>
               </tr>
+              <tr>
+                <td><code>processing_context</code></td>
+                <td>
+                  Optional. Set an Extract or Split input to <code>jobid</code> when it reuses an
+                  already billed Parse result; otherwise Lumos assumes a document input.
+                </td>
+              </tr>
             </tbody>
           </table>
         </div>
@@ -2621,11 +2947,16 @@ const result = await reducto.pipeline.run({ input, pipeline_id });`}</code></pre
           Created by <a href="https://varindersaini.com">Varinder Saini</a> · {" "}
           <a href="https://github.com/varinderp/lumos-reducto-preflight">Lumos GitHub</a>
         </p>
+        <p>
+          Please send feedback at {" "}
+          <a href="mailto:varinderpsaini@gmail.com">varinderpsaini@gmail.com</a>
+        </p>
         <details className="release-note">
-          <summary aria-label={`Lumos version ${packageJson.version}; show release note`}>
+          <summary aria-label={`Lumos version ${packageJson.version}; show release history`}>
             {`v${packageJson.version}`}
           </summary>
-          <p>Added r‑1 Beta pricing.</p>
+          <p><strong>v0.1.34</strong> — Added parsing add-on pricing.</p>
+          <p><strong>v0.1.33</strong> — Added r‑1 Beta pricing.</p>
         </details>
       </footer>
     </main>

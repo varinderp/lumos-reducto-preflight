@@ -29,7 +29,11 @@ export async function POST(request: Request) {
         extract_likely_usd: Number(estimate.extractLikely.toFixed(4)),
         extract_high_usd: Number(estimate.extractHigh.toFixed(4)),
         split_usd: Number(estimate.splitCost.toFixed(4)),
+        split_low_usd: Number(estimate.splitLow.toFixed(4)),
+        split_likely_usd: Number(estimate.splitLikely.toFixed(4)),
+        split_high_usd: Number(estimate.splitHigh.toFixed(4)),
         edit_usd: Number(estimate.editCost.toFixed(4)),
+        parsing_add_ons: estimate.parsingAddOns,
       },
       usage: {
         documents: input.documents.length,
@@ -41,6 +45,21 @@ export async function POST(request: Request) {
         extract_pages_priced: estimate.extractPages,
         split_pages_priced: estimate.splitPages,
         extract_cost_multiplier: estimate.extractCostMultiplier,
+        ocr_pages: {
+          parse: estimate.parsingAddOns.parse.ocr_pages,
+          extract: estimate.parsingAddOns.extract.ocr_pages,
+          split: estimate.parsingAddOns.split.ocr_pages,
+        },
+        prompted_pages: {
+          parse: estimate.parsingAddOns.parse.prompted_pages,
+          extract: estimate.parsingAddOns.extract.prompted_pages,
+          split: estimate.parsingAddOns.split.prompted_pages,
+        },
+        charts: {
+          parse: estimate.parsingAddOns.parse.charts,
+          extract: estimate.parsingAddOns.extract.charts,
+          split: estimate.parsingAddOns.split.charts,
+        },
       },
       assumptions_used: {
         ...(estimate.parseMode === "standalone" && estimate.parseModel === "legacy"

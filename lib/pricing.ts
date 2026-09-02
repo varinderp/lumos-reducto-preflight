@@ -4,6 +4,8 @@ export type ParsePricingModel = "legacy" | "r-1";
 export type ExtractMode = "none" | "standard" | "conditional" | "deep";
 export type SplitMode = "none" | "standard" | "deep";
 export type Decision = "allow" | "review" | "deny";
+export type PricedParsingEndpoint = "parse" | "extract" | "split";
+export type EndpointInputKind = "document" | "jobid";
 
 export type PublicPageRange =
   | { start: number; end: number }
@@ -11,6 +13,15 @@ export type PublicPageRange =
   | Array<{ start: number; end: number }>;
 
 type PageInterval = { start: number; end: number };
+type AdvancedChartCounts = { likely: number; maximum: number };
+
+type EndpointParsingAddOns = {
+  returnOcrData: boolean;
+  promptedBlocks: boolean;
+  advancedChart: boolean;
+  advancedChartCounts: AdvancedChartCounts | null;
+  inputKind: EndpointInputKind;
+};
 
 export type PricingDocument = {
   name: string;
@@ -26,18 +37,19 @@ export type PipelinePricingConfig = {
   parseCostMultiplier: number;
   parseBatchDiscount: number;
   parseComplexShare: number;
-  parseAdvancedChart: boolean;
-  parseAdvancedChartCounts: { likely: number; maximum: number } | null;
+  parseAddOns: EndpointParsingAddOns;
   classify: boolean;
   classifyStart: number;
   classifyEnd: number;
   extractMode: ExtractMode;
   extractPageRanges: PageInterval[] | null;
   extractCostMultiplier: number;
+  extractAddOns: EndpointParsingAddOns;
   deepShare: number;
   fieldsPerPage: number;
   splitMode: SplitMode;
   splitPageRanges: PageInterval[] | null;
+  splitAddOns: EndpointParsingAddOns;
   edit: boolean;
   fullyPrefilledEditPages: number;
   unpricedCostFactors: string[];
@@ -49,15 +61,27 @@ export type EstimateInput = {
   budgetUsd: number;
 };
 
+type PublicAgenticMode = {
+  scope: "text" | "table" | "figure";
+  mode?: string;
+  prompt?: string;
+  advanced_chart_agent?: boolean;
+};
+
+type PublicParsingConfiguration = {
+  enhance?: {
+    agentic?: PublicAgenticMode[] | null;
+  } | null;
+  settings?: {
+    page_range?: PublicPageRange | null;
+    return_ocr_data?: boolean;
+  } | null;
+};
+
 export type PublicPipeline = {
   parse?: {
     enhance?: {
-      agentic?: Array<{
-        scope: "text" | "table" | "figure";
-        mode?: string;
-        prompt?: string;
-        advanced_chart_agent?: boolean;
-      }> | null;
+      agentic?: PublicAgenticMode[] | null;
     } | null;
     settings?: {
       page_range?: PublicPageRange | null;
@@ -76,12 +100,11 @@ export type PublicPipeline = {
       include_images?: boolean;
       page_range?: PublicPageRange | null;
     } | null;
+    parsing?: PublicParsingConfiguration | null;
   } | null;
   split?: {
     settings?: { deep_split?: boolean } | null;
-    parsing?: {
-      settings?: { page_range?: PublicPageRange | null } | null;
-    } | null;
+    parsing?: PublicParsingConfiguration | null;
   } | null;
   edit?: object | null;
   lumos_assumptions?: {
@@ -90,6 +113,12 @@ export type PublicPipeline = {
       likely: number;
       maximum: number;
     } | null;
+    advanced_chart_counts_by_endpoint?: Partial<
+      Record<PricedParsingEndpoint, AdvancedChartCounts>
+    > | null;
+    prompted_blocks_or_custom_regions?: Partial<
+      Record<PricedParsingEndpoint, boolean>
+    > | null;
     conditional_extract_routing?: boolean;
     likely_deep_extract_share?: number;
     estimated_extract_fields_per_page?: number;
@@ -102,6 +131,10 @@ export type PublicEstimateRequest = {
   documents: Array<{ name: string; pages: number; assumed_extract_route?: RouteMode }>;
   pipeline: PublicPipeline;
   policy?: { max_total_usd?: number };
+  processing_context?: {
+    extract_input?: EndpointInputKind;
+    split_input?: EndpointInputKind;
+  };
 };
 
 export const RATE_CARD = "reducto-public-2026-09-01";
@@ -112,6 +145,8 @@ export type PricingUnitRates = {
   parseComplex: number;
   parseR1: number;
   advancedChart: number;
+  ocrDataReturn: number;
+  promptedBlocks: number;
   classify: number;
   extract: number;
   deepExtract: number;
@@ -126,6 +161,8 @@ export const DEFAULT_PRICING_UNIT_RATES: PricingUnitRates = Object.freeze({
   parseComplex: 0.03,
   parseR1: 0.01,
   advancedChart: 0.06,
+  ocrDataReturn: 0.002,
+  promptedBlocks: 0.005,
   classify: 0.0075,
   extract: 0.02,
   deepExtract: 0.04,
@@ -296,10 +333,87 @@ function finiteNumber(
   return resolved;
 }
 
+function inspectParsingAddOns(
+  enhance: Record<string, unknown>,
+  settings: Record<string, unknown>,
+  label: string,
+) {
+  rejectUnknownKeys(enhance, ["agentic"], `${label}.enhance`);
+  const rawAgentic = enhance.agentic;
+  if (rawAgentic !== undefined && rawAgentic !== null && !Array.isArray(rawAgentic)) {
+    throw new Error(`${label}.enhance.agentic must be an array or null.`);
+  }
+  const agentic = Array.isArray(rawAgentic) ? rawAgentic : [];
+  let advancedChart = false;
+  let promptedBlocks = false;
+  for (const [index, rawMode] of agentic.entries()) {
+    if (!isRecord(rawMode)) {
+      throw new Error(`${label}.enhance.agentic[${index}] must be an object.`);
+    }
+    rejectUnknownKeys(
+      rawMode,
+      ["scope", "mode", "prompt", "advanced_chart_agent"],
+      `${label}.enhance.agentic[${index}]`,
+    );
+    if (
+      rawMode.scope !== "text" &&
+      rawMode.scope !== "table" &&
+      rawMode.scope !== "figure"
+    ) {
+      throw new Error(
+        `${label}.enhance.agentic[${index}].scope must be text, table, or figure.`,
+      );
+    }
+    for (const key of ["mode", "prompt"] as const) {
+      const value = rawMode[key];
+      if (value !== undefined && (typeof value !== "string" || !value.trim())) {
+        throw new Error(
+          `${label}.enhance.agentic[${index}].${key} must be a nonempty string.`,
+        );
+      }
+    }
+    const chart = optionalBoolean(
+      rawMode,
+      "advanced_chart_agent",
+      `${label}.enhance.agentic[${index}].advanced_chart_agent`,
+    );
+    if (chart === true && rawMode.scope !== "figure") {
+      throw new Error(
+        `${label}.enhance.agentic[${index}].advanced_chart_agent requires scope "figure".`,
+      );
+    }
+    advancedChart ||= chart === true;
+    promptedBlocks ||= typeof rawMode.prompt === "string";
+  }
+  return {
+    advancedChart,
+    promptedBlocks,
+    returnOcrData:
+      optionalBoolean(settings, "return_ocr_data", `${label}.settings.return_ocr_data`) ===
+      true,
+  };
+}
+
+function inputKind(
+  context: Record<string, unknown>,
+  key: "extract_input" | "split_input",
+) {
+  const value = context[key];
+  if (value === undefined) return "document" as const;
+  if (value !== "document" && value !== "jobid") {
+    throw new Error(`processing_context.${key} must be "document" or "jobid".`);
+  }
+  return value;
+}
+
 export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
   const rawInput: unknown = input;
   if (!isRecord(rawInput)) throw new Error("The estimate request must be an object.");
-  rejectUnknownKeys(rawInput, ["documents", "pipeline", "policy"], "request");
+  rejectUnknownKeys(
+    rawInput,
+    ["documents", "pipeline", "policy", "processing_context"],
+    "request",
+  );
 
   const rawDocuments = rawInput.documents;
   if (!Array.isArray(rawDocuments) || rawDocuments.length === 0) {
@@ -325,6 +439,11 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
     throw new Error("policy must be an object when supplied.");
   }
   const policy = rawPolicy ?? {};
+  const rawProcessingContext = rawInput.processing_context;
+  if (rawProcessingContext !== undefined && !isRecord(rawProcessingContext)) {
+    throw new Error("processing_context must be an object when supplied.");
+  }
+  const processingContext = rawProcessingContext ?? {};
 
   if (parse) {
     rejectUnknownKeys(
@@ -334,7 +453,7 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
     );
   }
   if (classify) rejectUnknownKeys(classify, ["page_range"], "pipeline.classify");
-  if (extract) rejectUnknownKeys(extract, ["settings"], "pipeline.extract");
+  if (extract) rejectUnknownKeys(extract, ["settings", "parsing"], "pipeline.extract");
   if (split) rejectUnknownKeys(split, ["settings", "parsing"], "pipeline.split");
   if (edit) rejectUnknownKeys(edit, [], "pipeline.edit");
   rejectUnknownKeys(
@@ -342,6 +461,8 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
     [
       "likely_complex_parse_share",
       "advanced_chart_counts",
+      "advanced_chart_counts_by_endpoint",
+      "prompted_blocks_or_custom_regions",
       "conditional_extract_routing",
       "likely_deep_extract_share",
       "estimated_extract_fields_per_page",
@@ -351,6 +472,11 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
     "pipeline.lumos_assumptions",
   );
   rejectUnknownKeys(policy, ["max_total_usd"], "policy");
+  rejectUnknownKeys(
+    processingContext,
+    ["extract_input", "split_input"],
+    "processing_context",
+  );
 
   const parseEnhance = parse
     ? (optionalRecord(parse, "enhance", "pipeline.parse.enhance") ?? {})
@@ -360,6 +486,23 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
     : {};
   const extractSettings = extract
     ? (optionalRecord(extract, "settings", "pipeline.extract.settings") ?? {})
+    : {};
+  const extractParsing = extract
+    ? optionalRecord(extract, "parsing", "pipeline.extract.parsing")
+    : null;
+  const extractParsingEnhance = extractParsing
+    ? (optionalRecord(
+        extractParsing,
+        "enhance",
+        "pipeline.extract.parsing.enhance",
+      ) ?? {})
+    : {};
+  const extractParsingSettings = extractParsing
+    ? (optionalRecord(
+        extractParsing,
+        "settings",
+        "pipeline.extract.parsing.settings",
+      ) ?? {})
     : {};
   const splitSettings = split
     ? (optionalRecord(split, "settings", "pipeline.split.settings") ?? {})
@@ -372,6 +515,13 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
         splitParsing,
         "settings",
         "pipeline.split.parsing.settings",
+      ) ?? {})
+    : {};
+  const splitParsingEnhance = splitParsing
+    ? (optionalRecord(
+        splitParsing,
+        "enhance",
+        "pipeline.split.parsing.enhance",
       ) ?? {})
     : {};
   rejectUnknownKeys(parseEnhance, ["agentic"], "pipeline.parse.enhance");
@@ -387,11 +537,19 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
   );
   rejectUnknownKeys(splitSettings, ["deep_split"], "pipeline.split.settings");
   if (splitParsing) {
-    rejectUnknownKeys(splitParsing, ["settings"], "pipeline.split.parsing");
+    rejectUnknownKeys(splitParsing, ["enhance", "settings"], "pipeline.split.parsing");
+  }
+  if (extractParsing) {
+    rejectUnknownKeys(extractParsing, ["enhance", "settings"], "pipeline.extract.parsing");
   }
   rejectUnknownKeys(
+    extractParsingSettings,
+    ["page_range", "return_ocr_data"],
+    "pipeline.extract.parsing.settings",
+  );
+  rejectUnknownKeys(
     splitParsingSettings,
-    ["page_range"],
+    ["page_range", "return_ocr_data"],
     "pipeline.split.parsing.settings",
   );
 
@@ -470,6 +628,18 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
     "return_ocr_data",
     "Parse settings.return_ocr_data",
   );
+  const extractParsingAddOns = inspectParsingAddOns(
+    extractParsingEnhance,
+    extractParsingSettings,
+    "Extract parsing",
+  );
+  const splitParsingAddOns = inspectParsingAddOns(
+    splitParsingEnhance,
+    splitParsingSettings,
+    "Split parsing",
+  );
+  const extractInputKind = inputKind(processingContext, "extract_input");
+  const splitInputKind = inputKind(processingContext, "split_input");
 
   const deepExtract = optionalBoolean(
     extractSettings,
@@ -596,6 +766,89 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
     throw new Error("advanced_chart_counts.maximum must be at least the likely count.");
   }
 
+  const rawCountsByEndpoint =
+    optionalRecord(
+      assumptions,
+      "advanced_chart_counts_by_endpoint",
+      "lumos_assumptions.advanced_chart_counts_by_endpoint",
+    ) ?? {};
+  rejectUnknownKeys(
+    rawCountsByEndpoint,
+    ["parse", "extract", "split"],
+    "lumos_assumptions.advanced_chart_counts_by_endpoint",
+  );
+  const endpointChartCounts = (endpoint: PricedParsingEndpoint) => {
+    const rawCounts = optionalRecord(
+      rawCountsByEndpoint,
+      endpoint,
+      `lumos_assumptions.advanced_chart_counts_by_endpoint.${endpoint}`,
+    );
+    if (!rawCounts) return null;
+    rejectUnknownKeys(
+      rawCounts,
+      ["likely", "maximum"],
+      `lumos_assumptions.advanced_chart_counts_by_endpoint.${endpoint}`,
+    );
+    if (!Object.hasOwn(rawCounts, "likely") || !Object.hasOwn(rawCounts, "maximum")) {
+      throw new Error(
+        `advanced_chart_counts_by_endpoint.${endpoint} needs both likely and maximum counts.`,
+      );
+    }
+    const likely = finiteNumber(
+      rawCounts.likely,
+      0,
+      `lumos_assumptions.advanced_chart_counts_by_endpoint.${endpoint}.likely`,
+      { minimum: 0, safeInteger: true },
+    );
+    const maximum = finiteNumber(
+      rawCounts.maximum,
+      0,
+      `lumos_assumptions.advanced_chart_counts_by_endpoint.${endpoint}.maximum`,
+      { minimum: 0, safeInteger: true },
+    );
+    if (maximum < likely) {
+      throw new Error(
+        `advanced_chart_counts_by_endpoint.${endpoint}.maximum must be at least the likely count.`,
+      );
+    }
+    return { likely, maximum };
+  };
+  const chartCountsByEndpoint = {
+    parse: endpointChartCounts("parse") ?? parseAdvancedChartCounts,
+    extract: endpointChartCounts("extract"),
+    split: endpointChartCounts("split"),
+  };
+  if (
+    parseAdvancedChartCounts &&
+    optionalRecord(
+      rawCountsByEndpoint,
+      "parse",
+      "lumos_assumptions.advanced_chart_counts_by_endpoint.parse",
+    )
+  ) {
+    throw new Error(
+      "Use either advanced_chart_counts or advanced_chart_counts_by_endpoint.parse, not both.",
+    );
+  }
+
+  const rawPromptedEndpoints =
+    optionalRecord(
+      assumptions,
+      "prompted_blocks_or_custom_regions",
+      "lumos_assumptions.prompted_blocks_or_custom_regions",
+    ) ?? {};
+  rejectUnknownKeys(
+    rawPromptedEndpoints,
+    ["parse", "extract", "split"],
+    "lumos_assumptions.prompted_blocks_or_custom_regions",
+  );
+  const promptedAssumption = (endpoint: PricedParsingEndpoint) =>
+    optionalBoolean(
+      rawPromptedEndpoints,
+      endpoint,
+      `lumos_assumptions.prompted_blocks_or_custom_regions.${endpoint}`,
+    ) === true;
+
   const classifyRangeValue = classify?.page_range;
   if (classifyRangeValue != null && !isRecord(classifyRangeValue)) {
     throw new Error("Classify page_range must be an object or null.");
@@ -717,6 +970,30 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
         ? "deep"
         : "standard";
 
+  if (extractInputKind === "jobid" && !hasExtract) {
+    throw new Error("processing_context.extract_input requires Extract to be enabled.");
+  }
+  if (splitInputKind === "jobid" && split == null) {
+    throw new Error("processing_context.split_input requires Split to be enabled.");
+  }
+  const chartConfiguredByEndpoint = {
+    parse: parseMode === "standalone" && parseAdvancedChart,
+    extract: hasExtract && extractParsingAddOns.advancedChart,
+    split: split != null && splitParsingAddOns.advancedChart,
+  };
+  const chartEnabledByEndpoint = {
+    parse: chartConfiguredByEndpoint.parse,
+    extract: chartConfiguredByEndpoint.extract && extractInputKind !== "jobid",
+    split: chartConfiguredByEndpoint.split && splitInputKind !== "jobid",
+  };
+  for (const endpoint of ["parse", "extract", "split"] as const) {
+    if (chartCountsByEndpoint[endpoint] && !chartConfiguredByEndpoint[endpoint]) {
+      throw new Error(
+        `advanced_chart_counts_by_endpoint.${endpoint} requires Advanced Chart processing for ${endpoint}.`,
+      );
+    }
+  }
+
   const rawUnpricedCostFactors =
     assumptions.unpriced_cost_factors === undefined
       ? []
@@ -730,41 +1007,55 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
   ) {
     throw new Error("lumos_assumptions.unpriced_cost_factors must be a short list of names.");
   }
+  const obsoleteR1Factors = new Set([
+    "parse.r1_agentic_prompt",
+    "parse.r1_return_ocr_data",
+    "parse.r1_advanced_chart",
+  ]);
   const unpricedCostFactors = rawUnpricedCostFactors.filter(
-    (factor) => parseModel !== "r-1" || factor !== "parse.advanced_chart_count",
+    (factor) => {
+      if (obsoleteR1Factors.has(factor)) return false;
+      const chartEndpoint = factor.match(/^(parse|extract|split)\.advanced_chart_count$/)?.[1] as
+        | PricedParsingEndpoint
+        | undefined;
+      return (
+        !chartEndpoint ||
+        (chartEnabledByEndpoint[chartEndpoint] && chartCountsByEndpoint[chartEndpoint] == null)
+      );
+    },
   );
   if (includeImages === true) unpricedCostFactors.push("extract.include_images");
   if (hasExtract && (!hasEstimatedFields || fieldsPerPage > 100)) {
     unpricedCostFactors.push("extract.field_density");
   }
-  if (parseMode === "standalone" && parseModel === "r-1") {
-    if (parseHasCustomPrompt) {
-      unpricedCostFactors.push("parse.r1_agentic_prompt");
+  for (const endpoint of ["parse", "extract", "split"] as const) {
+    if (chartEnabledByEndpoint[endpoint] && chartCountsByEndpoint[endpoint] == null) {
+      unpricedCostFactors.push(`${endpoint}.advanced_chart_count`);
     }
-    if (parseReturnOcrData === true) {
-      unpricedCostFactors.push("parse.r1_return_ocr_data");
-    }
-    if (parseAdvancedChart) {
-      unpricedCostFactors.push("parse.r1_advanced_chart");
-    }
-  }
-  if (
-    parseMode === "standalone" &&
-    parseModel === "legacy" &&
-    parseAdvancedChart &&
-    parseAdvancedChartCounts == null
-  ) {
-    unpricedCostFactors.push("parse.advanced_chart_count");
   }
 
   const parsePageRanges = normalizeOperationPageRanges(
     parseSettings.page_range as PublicPageRange | null | undefined,
     "Parse settings.page_range",
   );
-  let extractPageRanges = normalizeOperationPageRanges(
+  const legacyExtractPageRanges = normalizeOperationPageRanges(
     extractSettings.page_range as PublicPageRange | null | undefined,
     "Extract settings.page_range",
   );
+  const nestedExtractPageRanges = normalizeOperationPageRanges(
+    extractParsingSettings.page_range as PublicPageRange | null | undefined,
+    "Extract parsing.settings.page_range",
+  );
+  if (
+    legacyExtractPageRanges !== null &&
+    nestedExtractPageRanges !== null &&
+    !samePageIntervals(legacyExtractPageRanges, nestedExtractPageRanges)
+  ) {
+    throw new Error(
+      "Extract settings.page_range conflicts with parsing.settings.page_range.",
+    );
+  }
+  let extractPageRanges = nestedExtractPageRanges ?? legacyExtractPageRanges;
   let splitPageRanges = normalizeOperationPageRanges(
     splitParsingSettings.page_range as PublicPageRange | null | undefined,
     "Split parsing.settings.page_range",
@@ -803,8 +1094,15 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
           ? FIXED_PRICING_RULES.batchParseDiscount
           : 0,
       parseComplexShare,
-      parseAdvancedChart,
-      parseAdvancedChartCounts,
+      parseAddOns: {
+        returnOcrData: parseMode === "standalone" && parseReturnOcrData === true,
+        promptedBlocks:
+          parseMode === "standalone" &&
+          (parseHasCustomPrompt || promptedAssumption("parse")),
+        advancedChart: chartEnabledByEndpoint.parse,
+        advancedChartCounts: chartCountsByEndpoint.parse,
+        inputKind: "document",
+      },
       classify: classify != null,
       classifyStart,
       classifyEnd,
@@ -814,10 +1112,36 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
         optimizeForLatency === true
           ? FIXED_PRICING_RULES.extractLatencyMultiplier
           : 1,
+      extractAddOns: {
+        returnOcrData:
+          hasExtract &&
+          extractInputKind !== "jobid" &&
+          extractParsingAddOns.returnOcrData,
+        promptedBlocks:
+          hasExtract &&
+          extractInputKind !== "jobid" &&
+          (extractParsingAddOns.promptedBlocks || promptedAssumption("extract")),
+        advancedChart: chartEnabledByEndpoint.extract,
+        advancedChartCounts: chartCountsByEndpoint.extract,
+        inputKind: extractInputKind,
+      },
       deepShare: likelyDeepShare,
       fieldsPerPage,
       splitMode: split == null ? "none" : deepSplit === true ? "deep" : "standard",
       splitPageRanges,
+      splitAddOns: {
+        returnOcrData:
+          split != null &&
+          splitInputKind !== "jobid" &&
+          splitParsingAddOns.returnOcrData,
+        promptedBlocks:
+          split != null &&
+          splitInputKind !== "jobid" &&
+          (splitParsingAddOns.promptedBlocks || promptedAssumption("split")),
+        advancedChart: chartEnabledByEndpoint.split,
+        advancedChartCounts: chartCountsByEndpoint.split,
+        inputKind: splitInputKind,
+      },
       edit: edit != null,
       fullyPrefilledEditPages,
       unpricedCostFactors: [...new Set(unpricedCostFactors.map((factor) => factor.trim()))],
@@ -865,20 +1189,25 @@ export function estimatePipeline(
     pipeline.parseModel === "r-1"
       ? parsePages * rates.parseR1
       : parsePages * rates.parseComplex * pipeline.parseCostMultiplier;
-  const parseChartLikely =
-    pipeline.parseModel === "legacy"
-      ? (pipeline.parseAdvancedChartCounts?.likely ?? 0)
-      : 0;
-  const parseChartMaximum =
-    pipeline.parseModel === "legacy"
-      ? (pipeline.parseAdvancedChartCounts?.maximum ?? 0)
-      : 0;
-  const parseLow = parsePageLow * parseDiscountMultiplier;
+  const parseChartLikely = pipeline.parseAddOns.advancedChart
+    ? (pipeline.parseAddOns.advancedChartCounts?.likely ?? 0)
+    : 0;
+  const parseChartMaximum = pipeline.parseAddOns.advancedChart
+    ? (pipeline.parseAddOns.advancedChartCounts?.maximum ?? 0)
+    : 0;
+  const parseOcrCost = pipeline.parseAddOns.returnOcrData
+    ? parsePages * rates.ocrDataReturn
+    : 0;
+  const parsePromptedCost = pipeline.parseAddOns.promptedBlocks
+    ? parsePages * rates.promptedBlocks
+    : 0;
+  const parseFixedAddOns = parseOcrCost + parsePromptedCost;
+  const parseLow = (parsePageLow + parseFixedAddOns) * parseDiscountMultiplier;
   const parseLikely =
-    (parsePageLikely + parseChartLikely * rates.advancedChart) *
+    (parsePageLikely + parseFixedAddOns + parseChartLikely * rates.advancedChart) *
     parseDiscountMultiplier;
   const parseHigh =
-    (parsePageHigh + parseChartMaximum * rates.advancedChart) *
+    (parsePageHigh + parseFixedAddOns + parseChartMaximum * rates.advancedChart) *
     parseDiscountMultiplier;
 
   const classifyPages = pipeline.classify
@@ -962,6 +1291,22 @@ export function estimatePipeline(
         ((1 - deepFraction) * rates.extract + deepFraction * rates.deepExtract) *
         pipeline.extractCostMultiplier;
   }
+  const extractOcrCost = pipeline.extractAddOns.returnOcrData
+    ? extractPages * rates.ocrDataReturn
+    : 0;
+  const extractPromptedCost = pipeline.extractAddOns.promptedBlocks
+    ? extractPages * rates.promptedBlocks
+    : 0;
+  const extractChartLikely = pipeline.extractAddOns.advancedChart
+    ? (pipeline.extractAddOns.advancedChartCounts?.likely ?? 0)
+    : 0;
+  const extractChartMaximum = pipeline.extractAddOns.advancedChart
+    ? (pipeline.extractAddOns.advancedChartCounts?.maximum ?? 0)
+    : 0;
+  const extractFixedAddOns = extractOcrCost + extractPromptedCost;
+  extractLow += extractFixedAddOns;
+  extractLikely += extractFixedAddOns + extractChartLikely * rates.advancedChart;
+  extractHigh += extractFixedAddOns + extractChartMaximum * rates.advancedChart;
 
   const splitPageCounts = new Map<PricingDocument, number>();
   for (const document of documents) {
@@ -988,12 +1333,31 @@ export function estimatePipeline(
     (sum, document) => sum + (splitPageCounts.get(document) ?? 0),
     0,
   );
-  const splitCost =
+  const splitBaseCost =
     pipeline.splitMode === "standard"
       ? splitPages * rates.split
       : pipeline.splitMode === "deep"
         ? splitPages * rates.deepSplit
         : 0;
+  const splitOcrCost = pipeline.splitAddOns.returnOcrData
+    ? splitPages * rates.ocrDataReturn
+    : 0;
+  const splitPromptedCost = pipeline.splitAddOns.promptedBlocks
+    ? splitPages * rates.promptedBlocks
+    : 0;
+  const splitChartLikely = pipeline.splitAddOns.advancedChart
+    ? (pipeline.splitAddOns.advancedChartCounts?.likely ?? 0)
+    : 0;
+  const splitChartMaximum = pipeline.splitAddOns.advancedChart
+    ? (pipeline.splitAddOns.advancedChartCounts?.maximum ?? 0)
+    : 0;
+  const splitFixedAddOns = splitOcrCost + splitPromptedCost;
+  const splitLow = splitBaseCost + splitFixedAddOns;
+  const splitLikely =
+    splitBaseCost + splitFixedAddOns + splitChartLikely * rates.advancedChart;
+  const splitHigh =
+    splitBaseCost + splitFixedAddOns + splitChartMaximum * rates.advancedChart;
+  const splitCost = splitLikely;
 
   const fullyPrefilledEditPages = Math.min(totalPages, pipeline.fullyPrefilledEditPages);
   const editCost = pipeline.edit
@@ -1001,10 +1365,10 @@ export function estimatePipeline(
       (totalPages - fullyPrefilledEditPages) * rates.edit
     : 0;
 
-  const fixed = classifyCost + splitCost + editCost;
-  const low = fixed + parseLow + extractLow;
-  const likely = fixed + parseLikely + extractLikely;
-  const high = fixed + parseHigh + extractHigh;
+  const fixed = classifyCost + editCost;
+  const low = fixed + parseLow + extractLow + splitLow;
+  const likely = fixed + parseLikely + extractLikely + splitLikely;
+  const high = fixed + parseHigh + extractHigh + splitHigh;
   const decision: Decision =
     low > budgetUsd
       ? "deny"
@@ -1023,15 +1387,49 @@ export function estimatePipeline(
     parseCostMultiplier: pipeline.parseCostMultiplier,
     parseBatchDiscount: pipeline.parseBatchDiscount,
     parseLikelyComplexShare: pipeline.parseComplexShare,
-    parseAdvancedChart: pipeline.parseAdvancedChart,
+    parseAdvancedChart: pipeline.parseAddOns.advancedChart,
     parseAdvancedChartCounts:
-      pipeline.parseModel === "legacy" && pipeline.parseAdvancedChartCounts
+      pipeline.parseAddOns.advancedChartCounts
       ? {
           low: 0,
-          likely: pipeline.parseAdvancedChartCounts.likely,
-          high: pipeline.parseAdvancedChartCounts.maximum,
+          likely: pipeline.parseAddOns.advancedChartCounts.likely,
+          high: pipeline.parseAddOns.advancedChartCounts.maximum,
         }
       : null,
+    parsingAddOns: {
+      parse: {
+        input: pipeline.parseAddOns.inputKind,
+        ocr_pages: pipeline.parseAddOns.returnOcrData ? parsePages : 0,
+        prompted_pages: pipeline.parseAddOns.promptedBlocks ? parsePages : 0,
+        charts: { low: 0, likely: parseChartLikely, high: parseChartMaximum },
+        ocr_usd: parseOcrCost * parseDiscountMultiplier,
+        prompted_usd: parsePromptedCost * parseDiscountMultiplier,
+        chart_likely_usd:
+          parseChartLikely * rates.advancedChart * parseDiscountMultiplier,
+        chart_high_usd:
+          parseChartMaximum * rates.advancedChart * parseDiscountMultiplier,
+      },
+      extract: {
+        input: pipeline.extractAddOns.inputKind,
+        ocr_pages: pipeline.extractAddOns.returnOcrData ? extractPages : 0,
+        prompted_pages: pipeline.extractAddOns.promptedBlocks ? extractPages : 0,
+        charts: { low: 0, likely: extractChartLikely, high: extractChartMaximum },
+        ocr_usd: extractOcrCost,
+        prompted_usd: extractPromptedCost,
+        chart_likely_usd: extractChartLikely * rates.advancedChart,
+        chart_high_usd: extractChartMaximum * rates.advancedChart,
+      },
+      split: {
+        input: pipeline.splitAddOns.inputKind,
+        ocr_pages: pipeline.splitAddOns.returnOcrData ? splitPages : 0,
+        prompted_pages: pipeline.splitAddOns.promptedBlocks ? splitPages : 0,
+        charts: { low: 0, likely: splitChartLikely, high: splitChartMaximum },
+        ocr_usd: splitOcrCost,
+        prompted_usd: splitPromptedCost,
+        chart_likely_usd: splitChartLikely * rates.advancedChart,
+        chart_high_usd: splitChartMaximum * rates.advancedChart,
+      },
+    },
     parseLow,
     parseLikely,
     parseHigh,
@@ -1045,6 +1443,9 @@ export function estimatePipeline(
     extractLikely,
     extractHigh,
     splitPages,
+    splitLow,
+    splitLikely,
+    splitHigh,
     splitCost,
     editCost,
     low,

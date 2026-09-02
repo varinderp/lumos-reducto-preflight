@@ -703,6 +703,8 @@ function inspectParseConfig(config: JsonObject) {
     advancedChart:
       topLevelAdvancedChart ||
       canonicalAgentic?.some((mode) => mode.advanced_chart_agent === true) === true,
+    promptedBlocks:
+      canonicalAgentic?.some((mode) => typeof mode.prompt === "string") === true,
     queuePriority: canonicalQueuePriority,
     spreadsheetConfig: hasOwn(config, "spreadsheet"),
   };
@@ -724,7 +726,9 @@ function mergeParseInspections(
       !sameRanges(first.value.pageRanges, source.value.pageRanges) ||
       first.value.agentic !== source.value.agentic ||
       first.value.complex !== source.value.complex ||
-      first.value.advancedChart !== source.value.advancedChart
+      first.value.advancedChart !== source.value.advancedChart ||
+      first.value.promptedBlocks !== source.value.promptedBlocks ||
+      first.value.returnOcrData !== source.value.returnOcrData
     ) {
       throw new Error(
         `${first.label} conflicts with ${source.label}; Lumos cannot safely choose the bundled Parse settings.`,
@@ -1017,16 +1021,15 @@ function analyzeConfigurations(configurations: JsonObject[]): ReductoCodeImportR
         warnings,
       );
     }
+    const advancedChartEndpoints = [
+      ...(standaloneParse && topLevelParse.advancedChart ? ["parse"] : []),
+      ...(extract && extractParse?.advancedChart ? ["extract"] : []),
+      ...(split && splitParse?.advancedChart ? ["split"] : []),
+    ];
     const unpricedCostFactors = [
       ...(extract?.includeImages ? ["extract.include_images"] : []),
       ...(extract?.fieldDensityUnpriced ? ["extract.field_density"] : []),
-      ...(standaloneParse && hasAdvancedChart
-        ? [
-            topLevelParse.model === "r-1"
-              ? "parse.r1_advanced_chart"
-              : "parse.advanced_chart_count",
-          ]
-        : []),
+      ...advancedChartEndpoints.map((endpoint) => `${endpoint}.advanced_chart_count`),
     ];
     if (extract?.includeImages) {
       warnings.push("Extract image context is enabled and remains an unpriced cost factor.");
@@ -1034,11 +1037,9 @@ function analyzeConfigurations(configurations: JsonObject[]): ReductoCodeImportR
     if (extract?.fieldDensityUnpriced) {
       warnings.push("The Extract schema has no bounded field count, so field density remains an unpriced cost factor.");
     }
-    if (standaloneParse && hasAdvancedChart) {
+    if (advancedChartEndpoints.length > 0) {
       warnings.push(
-        topLevelParse.model === "r-1"
-          ? "Advanced Chart pricing for r-1 is excluded from this Beta estimate."
-          : "Advanced chart processing is configured, but no detected chart count is available before Parse runs, so that charge remains unpriced.",
+        `Advanced Chart is configured for ${advancedChartEndpoints.join(", ")}, but no detected chart count is available before processing, so that charge remains unpriced and the known page subtotal is shown.`,
       );
     }
 
@@ -1051,6 +1052,29 @@ function analyzeConfigurations(configurations: JsonObject[]): ReductoCodeImportR
       extractSettings.page_range =
         extractPageRanges.length === 1 ? extractPageRanges[0] : extractPageRanges;
     }
+    const publicParsing = (
+      inspection: ParseInspection | null,
+      ranges: ReductoImportPageRange[] | null,
+    ): NonNullable<NonNullable<PublicPipeline["extract"]>["parsing"]> | undefined => {
+      if (!inspection) return undefined;
+      const settings = {
+        ...(ranges
+          ? {
+              page_range: ranges.length === 1 ? ranges[0] : ranges,
+            }
+          : {}),
+        ...(inspection.returnOcrData === true
+          ? { return_ocr_data: true }
+          : {}),
+      };
+      const result = {
+        ...(inspection.canonicalAgentic === null || inspection.canonicalAgentic.length === 0
+          ? {}
+          : { enhance: { agentic: inspection.canonicalAgentic } }),
+        ...(Object.keys(settings).length > 0 ? { settings } : {}),
+      };
+      return Object.keys(result).length > 0 ? result : undefined;
+    };
 
     const pipeline: PublicPipeline = {
       parse: standaloneParse
@@ -1091,21 +1115,19 @@ function analyzeConfigurations(configurations: JsonObject[]): ReductoCodeImportR
           ? { page_range: classify.pageRanges[0] }
           : {}
         : null,
-      extract: extract ? { settings: extractSettings } : null,
+      extract: extract
+        ? {
+            settings: extractSettings,
+            ...(publicParsing(extractParse, null)
+              ? { parsing: publicParsing(extractParse, null) }
+              : {}),
+          }
+        : null,
       split: split
         ? {
             settings: { deep_split: split.deepSplit },
-            ...(splitPageRanges
-              ? {
-                  parsing: {
-                    settings: {
-                      page_range:
-                        splitPageRanges.length === 1
-                          ? splitPageRanges[0]
-                          : splitPageRanges,
-                    },
-                  },
-                }
+            ...(publicParsing(splitParse, splitPageRanges)
+              ? { parsing: publicParsing(splitParse, splitPageRanges) }
               : {}),
           }
         : null,

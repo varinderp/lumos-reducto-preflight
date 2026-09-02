@@ -50,6 +50,8 @@ const RATE_CARD_DEFAULTS = {
   parseComplex: "30",
   parseR1: "10",
   advancedChart: "0.06",
+  ocrDataReturn: "2",
+  promptedBlocks: "5",
   classify: "7.5",
   extract: "20",
   deepExtract: "40",
@@ -58,6 +60,17 @@ const RATE_CARD_DEFAULTS = {
   edit: "60",
   editPrefilled: "15",
 };
+
+test("release package versions stay aligned", async () => {
+  const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  const packageLock = JSON.parse(
+    await readFile(new URL("../package-lock.json", import.meta.url), "utf8"),
+  );
+
+  assert.equal(packageJson.version, "0.1.34");
+  assert.equal(packageLock.version, packageJson.version);
+  assert.equal(packageLock.packages[""].version, packageJson.version);
+});
 
 function extractSolutionParagraphs(content, figureMarker) {
   const start = content.indexOf("<h2>Solution</h2>");
@@ -201,6 +214,8 @@ test("server-renders the Lumos simulator and API", async () => {
     "Legacy Parse — Complex",
     "r‑1 Parse \\(Beta\\)",
     "Advanced Chart",
+    "OCR data return",
+    "Prompted blocks / custom regions",
     "Classify",
     "Standard Extract",
     "Deep Extract",
@@ -250,6 +265,10 @@ test("server-renders the Lumos simulator and API", async () => {
     html,
     /<code>policy\.max_total_usd<\/code>[\s\S]*?Optional\. Maximum acceptable job cost in USD\. Defaults to <code>10<\/code>\.[\s\S]*?<\/tr>/i,
   );
+  assert.match(
+    html,
+    /<code>processing_context<\/code>[\s\S]*?already billed Parse result[\s\S]*?<\/tr>/i,
+  );
   assert.doesNotMatch(html, /Required\. Original filenames and page counts\./);
   assert.doesNotMatch(html, /Required\. The copied Lumos profile, stored by your application\./);
   assert.match(html, /const documents = \[[\s\S]*?name: &quot;agreement\.pdf&quot;,[\s\S]*?pages: 42/);
@@ -264,10 +283,23 @@ test("server-renders the Lumos simulator and API", async () => {
     /Created by[\s\S]*?href="https:\/\/varindersaini\.com"[\s\S]*?Varinder Saini[\s\S]*?href="https:\/\/github\.com\/varinderp\/lumos-reducto-preflight"[\s\S]*?Lumos GitHub/,
   );
   assert.match(html, /varindersaini\.com/);
+  const renderedReleaseHistory = html.match(
+    /<details class="release-note">[\s\S]*?<\/details>/,
+  )?.[0];
+  assert.ok(renderedReleaseHistory);
+  assert.match(
+    renderedReleaseHistory,
+    /<summary aria-label="Lumos version 0\.1\.34; show release history">v0\.1\.34<\/summary>/,
+  );
+  const renderedCurrentRelease = renderedReleaseHistory.indexOf("Added parsing add-on pricing.");
+  const renderedPreviousRelease = renderedReleaseHistory.indexOf("Added r‑1 Beta pricing.");
+  assert.ok(renderedCurrentRelease >= 0);
+  assert.ok(renderedPreviousRelease > renderedCurrentRelease);
   assert.match(
     html,
-    /<details class="release-note"><summary aria-label="Lumos version 0\.1\.33; show release note">v0\.1\.33<\/summary><p>Added r‑1 Beta pricing\.<\/p><\/details>/,
+    /Please send feedback at[\s\S]*?<a href="mailto:varinderpsaini@gmail\.com">varinderpsaini@gmail\.com<\/a>/,
   );
+  assert.ok(html.indexOf("Please send feedback at") < html.indexOf('<details class="release-note">'));
   assert.doesNotMatch(html, />Paste Reducto JSON config</);
   assert.match(html, /<footer>[\s\S]*?Sources:/);
   assert.doesNotMatch(html, /<footer>[\s\S]*?Lumos uses Reducto/);
@@ -282,7 +314,16 @@ test("server-renders the Lumos simulator and API", async () => {
   await assert.rejects(access(new URL("../public/waiver.png", import.meta.url)));
 });
 
-test("pricing exports the eleven public unit rates and keeps fixed rules separate", async () => {
+test("paid verification preserves legacy usage and the newer usage breakdown", async () => {
+  const source = await readFile(new URL("../app/api/reducto/route.ts", import.meta.url), "utf8");
+  assert.match(source, /payload\.usage \?\? null/);
+  assert.match(source, /payload\.usage_breakdown \?\? null/);
+  assert.match(source, /step_usage_breakdown/);
+  assert.match(source, /\(value as JsonObject\)\.usage_breakdown \?\? null/);
+  assert.doesNotMatch(source, /usage_breakdown[^\n]*\.usage\b/);
+});
+
+test("pricing exports the thirteen public unit rates and keeps fixed rules separate", async () => {
   const {
     DEFAULT_PRICING_UNIT_RATES,
     FIXED_PRICING_RULES,
@@ -297,6 +338,8 @@ test("pricing exports the eleven public unit rates and keeps fixed rules separat
     parseComplex: 0.03,
     parseR1: 0.01,
     advancedChart: 0.06,
+    ocrDataReturn: 0.002,
+    promptedBlocks: 0.005,
     classify: 0.0075,
     extract: 0.02,
     deepExtract: 0.04,
@@ -305,7 +348,7 @@ test("pricing exports the eleven public unit rates and keeps fixed rules separat
     edit: 0.06,
     editPrefilled: 0.015,
   });
-  assert.equal(Object.keys(DEFAULT_PRICING_UNIT_RATES).length, 11);
+  assert.equal(Object.keys(DEFAULT_PRICING_UNIT_RATES).length, 13);
   assert.equal(Object.isFrozen(DEFAULT_PRICING_UNIT_RATES), true);
   assert.equal(RATE_CARD, "reducto-public-2026-09-01");
   assert.equal(R1_RATE_CARD, "reducto-public-2026-09-01-r1-beta");
@@ -384,6 +427,8 @@ test("custom simulator rates affect every editable pricing product", async () =>
     parseComplex: 0.202,
     parseR1: 0.111,
     advancedChart: 0.909,
+    ocrDataReturn: 0.012,
+    promptedBlocks: 0.013,
     classify: 1.01,
     extract: 0.303,
     deepExtract: 0.404,
@@ -397,8 +442,12 @@ test("custom simulator rates affect every editable pricing product", async () =>
     documents: [{ name: "charts.pdf", pages: 10 }],
     pipeline: {
       parse: {
+        settings: { return_ocr_data: true },
         enhance: {
-          agentic: [{ scope: "figure", advanced_chart_agent: true }],
+          agentic: [
+            { scope: "figure", advanced_chart_agent: true },
+            { scope: "text", prompt: "Use a custom region." },
+          ],
         },
       },
       lumos_assumptions: {
@@ -408,16 +457,22 @@ test("custom simulator rates affect every editable pricing product", async () =>
     },
   });
   const parseEstimate = estimatePipeline(parseInput, rates);
-  assertClose(parseEstimate.parseLow, 10 * rates.parseStandard * 2, "Standard Parse");
+  const fixedAddOns = 10 * (rates.ocrDataReturn + rates.promptedBlocks);
+  assertClose(
+    parseEstimate.parseLow,
+    10 * rates.parseStandard * 2 + fixedAddOns,
+    "Standard Parse and fixed add-ons",
+  );
   assertClose(
     parseEstimate.parseLikely,
     10 * (0.75 * rates.parseStandard + 0.25 * rates.parseComplex) * 2 +
+      fixedAddOns +
       2 * rates.advancedChart,
     "likely Parse and chart rates",
   );
   assertClose(
     parseEstimate.parseHigh,
-    10 * rates.parseComplex * 2 + 3 * rates.advancedChart,
+    10 * rates.parseComplex * 2 + fixedAddOns + 3 * rates.advancedChart,
     "Complex Parse and chart rates",
   );
 
@@ -768,9 +823,17 @@ test("r-1 Beta controls, announcement, preview card, and release note stay expli
   const releaseSource = source.slice(releaseStart, releaseEnd);
   assert.match(
     releaseSource,
-    /<summary aria-label=\{`Lumos version \$\{packageJson\.version\}; show release note`\}>/,
+    /<summary aria-label=\{`Lumos version \$\{packageJson\.version\}; show release history`\}>/,
   );
-  assert.match(releaseSource, /<p>Added r‑1 Beta pricing\.<\/p>/);
+  const currentRelease = releaseSource.indexOf("Added parsing add-on pricing.");
+  const previousRelease = releaseSource.indexOf("Added r‑1 Beta pricing.");
+  assert.ok(currentRelease >= 0);
+  assert.ok(previousRelease > currentRelease);
+  assert.match(
+    source,
+    /Please send feedback at \{" "\}\s*<a href="mailto:varinderpsaini@gmail\.com">varinderpsaini@gmail\.com<\/a>/,
+  );
+  assert.ok(source.indexOf("Please send feedback at") < releaseStart);
   assert.doesNotMatch(releaseSource, /<details[^>]*\sopen(?:=|\s|>)/);
 });
 
@@ -920,6 +983,9 @@ test("browser estimator derives processing mode from an applied pipeline", async
   assert.match(source, /Expected Complex page share/);
   assert.match(source, /Expected Deep Extract share/);
   assert.match(source, /Fully prefilled pages/);
+  assert.match(source, /Return OCR data/);
+  assert.match(source, /Prompted blocks or custom regions/);
+  assert.match(source, /Input reuses an existing Parse result \(<code>jobid:\/\/<\/code>\)/);
   assert.match(source, /aria-label=\{`Remove \$\{legend\} \$\{index \+ 1\}`\}/);
   assert.match(source, /aria-label=\{`Add another \$\{legend\}`\}/);
   assert.equal(source.match(/legend="Page Range"/g)?.length, 3);
@@ -944,6 +1010,7 @@ test("browser estimator derives processing mode from an applied pipeline", async
     apiSectionSource,
     /Optional\. Maximum acceptable job cost in USD[.;]\s*defaults to (?:<code>)?10(?:<\/code>)?\./i,
   );
+  assert.match(apiSectionSource, /processing_context[\s\S]*?jobid/i);
   assert.match(source, /authenticated server-to-server[\s\S]*?integration/);
   assert.match(source, /const pipeline = await loadSavedLumosProfile\(\)/);
   assert.match(source, />\s*Copy Lumos profile\s*<\/button>/);

@@ -1,8 +1,8 @@
-# Lumos — Product Specification v0.16
+# Lumos — Product Specification v0.17
 
 Status: working prototype
 
-Date: 2026-08-31
+Date: 2026-09-01
 
 ## 1. Product definition
 
@@ -42,9 +42,10 @@ The first release estimates these Reducto products:
 - Deep Split
 - Edit
 
-Under the public list rates effective September 1, 2026, parsing is included in
-Extract and Split pricing. Lumos therefore does not expose or add another parsing
-line to those estimates.
+Under the public list rates effective September 1, 2026, the base Parse page
+rate is included in Extract and Split pricing. Optional parsing add-ons remain
+separate: OCR data return, prompted blocks or custom regions, and Advanced Chart
+are added to the matching endpoint subtotal.
 
 In the visual builder, **Parse (standalone)** denotes a separately priced direct
 Parse job and is mutually exclusive with Extract and Split. Classify and Edit
@@ -70,6 +71,9 @@ Examples of documented Reducto settings used by Lumos:
 - Deep Extract: `settings.deep_extract: true`
 - Extract latency priority: `settings.optimize_for_latency: true`
 - Extract image context: `settings.include_images: true`
+- Extract/Split OCR data return: `parsing.settings.return_ocr_data: true`
+- Extract/Split prompted processing: `parsing.enhance.agentic[].prompt`
+- Extract/Split Advanced Chart: `parsing.enhance.agentic[].advanced_chart_agent`
 - Deep Split: `settings.deep_split: true`
 - Split page selection: `parsing.settings.page_range`
 
@@ -88,6 +92,8 @@ Examples of Lumos-owned inputs:
 - `lumos_assumptions.known_fully_prefilled_edit_pages`
 - `lumos_assumptions.likely_complex_parse_share`
 - `lumos_assumptions.advanced_chart_counts`
+- `lumos_assumptions.advanced_chart_counts_by_endpoint`
+- `lumos_assumptions.prompted_blocks_or_custom_regions`
 - `lumos_assumptions.unpriced_cost_factors`
 
 These inputs appear in a visibly separate **Additional inputs** area while
@@ -146,6 +152,9 @@ result without duplicating that link.
 
 Editing an applied pipeline suppresses the estimate and announces the stale
 state through the existing live status without a second ready-to-apply sentence.
+When parsing add-ons are charged, the Estimate summary includes one compact
+"Add-ons included above" line so their OCR, prompted-processing, and chart
+amounts are visible without duplicating endpoint totals.
 
 ## 5. Public rate-card snapshot
 
@@ -158,6 +167,8 @@ Lumos uses the published list rates effective September 1, 2026:
 | Parse, Legacy agentic mode | 2× the applicable page rate |
 | Parse, r‑1 Beta | $10 / 1,000 pages |
 | Advanced Chart Agent | $0.06 per detected chart |
+| OCR data return | $2 / 1,000 processed pages |
+| Prompted blocks / custom regions | $5 / 1,000 processed pages |
 | Batch Parse | 20% usage discount on `/parse_async` with `queue_priority: "batch"` |
 | Extract | $20 / 1,000 pages, parsing included |
 | Deep Extract | $40 / 1,000 pages, parsing included |
@@ -178,7 +189,7 @@ source of truth.
 
 The **Default rate card** or **Default rate card (custom)** link sits in **3.
 Policy** beside the **Maximum cost, USD** control and opens an on-demand dialog
-with all eleven numeric unit prices. **4. Estimate** does not repeat the link, and
+with all thirteen numeric unit prices. **4. Estimate** does not repeat the link, and
 the configuration footer contains only **Apply configuration**. Page prices
 are edited as dollars per 1,000 pages, while Advanced Chart Agent is edited as
 dollars per detected chart. The dialog marks the rates selected by the current
@@ -202,10 +213,9 @@ active.
 - r‑1 Parse is an opt-in Beta model for standalone Parse. It is priced at $10
   per 1,000 processed pages and supports page ranges plus the Batch Parse
   discount. Legacy Complex-page and Agentic multipliers do not apply to r‑1.
-  r‑1 custom prompts, OCR return, and Advanced Chart retain the known base
-  subtotal but make the estimate incomplete until their add-on pricing is
-  modeled. Promptless Agentic scopes are rejected for r‑1 with guidance to
-  remove them or choose Legacy.
+  OCR return, prompted blocks or custom regions, and Advanced Chart use the
+  same published add-on rates as Legacy. Promptless Agentic scopes are rejected
+  for r‑1 with guidance to remove them or choose Legacy.
 - Extract profiles at 100 estimated fields per page are supported. Above 100,
   Lumos preserves the known page estimate and marks the unpublished dense-field
   surcharge as incomplete.
@@ -213,10 +223,14 @@ active.
   cells and directs customers to their own rate card, so Lumos returns an
   unsupported response until cell units and a rate are available. The deferred
   implementation is defined in `SPREADSHEET_SUPPORT_SPEC.md`.
-- Advanced Chart Agent is priced for standalone Parse when chart-count bounds are
-  supplied. Without them, the page estimate remains visible but incomplete. Per
-  the product decision for this rate snapshot, the add-on is treated as included
-  when Parse is bundled into Extract or Split.
+- Advanced Chart Agent is priced for Parse, Extract, and Split when endpoint
+  chart-count bounds are supplied. Without them, the known page subtotal remains
+  visible but incomplete. OCR data return and prompted blocks or custom regions
+  use each endpoint's processed-page count. Legacy's Agentic 2x multiplier and
+  Extract's latency 2x multiplier affect only their base page rates.
+- When Extract or Split receives a `jobid://` input, parsing and its add-ons were
+  billed on the original Parse job. `processing_context` records that per-request
+  fact so Lumos does not charge those add-ons again.
 - `settings.include_images: true` is documented as increasing Extract cost, but
   no numeric adjustment appears in the September 1 public list-rate table. The
   importer surfaces that omission, marks the dollar result incomplete, and
@@ -271,10 +285,13 @@ omitted, Lumos keeps the page estimate visible but marks the unpublished
 field-density component incomplete.
 
 For standalone Parse, `likely_complex_parse_share` defaults visibly to `0.5`.
-When Advanced Chart Agent is enabled, `advanced_chart_counts` may supply
-non-negative whole-number `likely` and `maximum` values, with `likely` no greater
-than `maximum`. The low chart count is zero. If the counts are omitted, Lumos
-returns the known page range with `estimate_complete: false`.
+When Advanced Chart Agent is enabled, the backward-compatible
+`advanced_chart_counts` field supplies standalone Parse counts, while
+`advanced_chart_counts_by_endpoint` supplies Parse, Extract, or Split counts.
+Values are non-negative whole-number `likely` and `maximum` counts, with
+`likely` no greater than `maximum`. The low chart count is zero. If the matching
+counts are omitted, Lumos returns the known subtotal with
+`estimate_complete: false`.
 
 `queue_priority` accepts Reducto's `"auto"` and `"batch"` values. It is an
 execution-time `/parse_async` choice, so a Studio operation configuration does
@@ -311,6 +328,7 @@ their contents. Its request fields are:
 | `documents` | Yes | An array of metadata rows. Each item contains the original filename in `name` and its page count in `pages`; file contents are not accepted. |
 | `pipeline` | Yes | The Lumos profile generated after the simulator applies a configuration, whether it was set up manually or imported from Reducto. The application stores this profile. |
 | `policy.max_total_usd` | No | The maximum acceptable job cost in USD. It defaults to `10` when omitted. |
+| `processing_context` | No | Per-request Extract or Split input reuse. Set `extract_input` or `split_input` to `jobid` when the endpoint receives an already billed Parse result; document input is the default. |
 
 **Copy Lumos profile** sits in a shared action row beneath the simulator's manual
 and import panels. It is available only for a clean, valid applied
@@ -320,11 +338,10 @@ documents, policy, simulator-only rate edits, and preserved raw Reducto JSON.
 Lumos does not host profiles, issue profile IDs, or persist copied profiles; the
 integrating application owns profile storage.
 
-The response supplies estimates, operation breakdown, usage, and an `allow`,
-`review`, or `deny` decision. A production deployment protects the call as an
-authenticated server-to-server integration. The API contract, bundled Parse
-compatibility, pricing behavior, and strict Lumos profile schema remain
-unchanged.
+The response supplies estimates, operation and add-on breakdowns, predicted
+usage, and an `allow`, `review`, or `deny` decision. A production deployment
+protects the call as an authenticated server-to-server integration. The
+optional request context does not alter the copied Lumos profile.
 
 After a configuration is applied, the API section shows a collapsed **View this
 simulator's API request and response** disclosure. Expanding it reveals
@@ -360,17 +377,20 @@ Redundant settings subheadings are omitted. Estimator-owned values appear under
   Legacy exposes agentic Text, Table, and Figure scopes; Advanced Chart Agent
   under Figure; `queue_priority`; and `settings.page_range`. Its assumptions
   are expected Complex-page share and, when needed, likely and maximum chart
-  counts. r‑1 keeps queue priority and page range, but hides Legacy-only
-  complexity and Agentic controls.
+  counts. r‑1 keeps queue priority, page range, and the published parsing
+  add-ons, but hides Legacy-only complexity and Agentic controls.
 - **Classify** exposes its context `page_range` and has no estimator assumption.
 - **Extract** is described as **Return structured fields from the document,
   parsing included.** It exposes `settings.include_images`,
   `settings.optimize_for_latency`, `settings.deep_extract`, and its page range.
   Its assumptions are conditional Standard/Deep routing, expected Deep Extract
-  share, and expected fields per page.
+  share, expected fields per page, and optional chart counts. Nested parsing
+  controls cover OCR data return, prompted blocks/custom regions, and Advanced
+  Chart.
 - **Split** is described as **Separate a document into sections and partitions,
   parsing included.** It exposes `settings.deep_split` and
-  `parsing.settings.page_range` and has no estimator assumption.
+  `parsing.settings.page_range`, plus the same nested parsing add-ons and optional
+  chart counts.
 - **Edit** enables the endpoint and keeps known fully prefilled pages in its
   Additional inputs area. Its visible note is **Edit is priced separately and
   added to the estimate.** It is an additive line item at the built-in
@@ -392,6 +412,11 @@ tab, and any applicable Parse page range is transferred to a downstream
 operation that lacks its own range. Reapplication remains cost-equivalent.
 Extract and Split retain independent ranges. The public API continues to accept
 its existing bundled-Parse profile shape.
+
+Extract and Split also expose an input-reuse control. Selecting `jobid://`
+stores a per-request `processing_context` value rather than changing the copied
+profile, and suppresses their nested parsing add-ons because Reducto billed
+those on the original Parse job.
 
 The import path is a browser-only convenience layer and does not call Reducto.
 It previews the inferred operations, generated Lumos profile, and any warnings
@@ -449,6 +474,9 @@ Supported pricing mappings include:
 | `settings.deep_extract: false` or omitted | `extract.settings.deep_extract: false` | Standard Extract |
 | `settings.optimize_for_latency: true` | `extract.settings.optimize_for_latency: true` | Apply Reducto's documented 2× Extract cost |
 | `settings.include_images: true` | `extract.settings.include_images: true` plus an unpriced Lumos factor | Preserve the setting and require review for its unquantified increase |
+| nested `parsing.settings.return_ocr_data: true` | the matching Extract or Split parsing settings | Add $2 per 1,000 processed endpoint pages |
+| nested `parsing.enhance.agentic[].prompt` | the matching Extract or Split parsing enhance group | Add $5 per 1,000 processed endpoint pages |
+| nested Advanced Chart Agent | the matching Extract or Split parsing enhance group plus endpoint chart-count assumptions | Add $0.06 per detected chart, or keep the known subtotal incomplete when counts are absent |
 | Classify configuration with `page_range` | `classify.page_range` | Price Classify context pages |
 | Split configuration | `split` is present | Standard Split unless Deep Split is enabled |
 | `settings.deep_split: true` | `split.settings.deep_split: true` | Current documented Deep Split setting |
@@ -471,7 +499,8 @@ ranges and other cost-relevant Parse options within the downstream operation.
 Lumos does not add a separate Parse line because the current Extract and Split
 prices include parsing. A standalone Legacy Parse configuration receives a
 Standard/Complex estimate range. A standalone r‑1 configuration receives the
-known $10-per-1,000-pages subtotal and the r‑1 Beta rate-card identifier.
+$10-per-1,000-pages base rate, any published parsing add-ons, and the r‑1 Beta
+rate-card identifier.
 
 Imported standalone Parse JSON with `settings.model: "r-1"` selects r‑1.
 Missing `settings.model` is treated as Legacy and produces a short import notice
@@ -479,11 +508,12 @@ so existing profiles remain unchanged. `settings.model: "legacy"` is also
 accepted explicitly. Bundled Parse continues to use downstream pricing and is
 not switched to a separately priced r‑1 job.
 
-If standalone Parse enables Advanced Chart Agent without chart-count assumptions,
-Lumos records `parse.advanced_chart_count`. The Standard/Complex page estimate
-remains visible and the result requires review. When the same Parse configuration
-is bundled into Extract or Split, agentic work, complexity, and Advanced Chart
-Agent do not add a separate Parse charge under this rate snapshot.
+If an endpoint enables Advanced Chart Agent without chart-count assumptions,
+Lumos records `<endpoint>.advanced_chart_count`. Its known page subtotal remains
+visible and the result requires review. Inside Extract or Split, agentic work
+and complexity do not add a separate base Parse charge, but Advanced Chart, OCR
+data return, and prompted blocks or custom regions remain add-ons to that
+endpoint's page rate.
 
 Page numbers are 1-indexed and inclusive. Overlapping ranges count once, and a
 range ending past the uploaded document stops at its last page. Multiple
@@ -713,7 +743,8 @@ cost-profile input.
 17. Standalone Parse returns Standard/Complex low, likely, and high values,
     applying agentic, chart-count, and batch settings only where documented.
 18. Parse configurations can accompany Extract or Split without adding a
-    separate Parse, agentic, complexity, or chart charge.
+    separate base Parse, Agentic, or complexity charge; OCR, prompts/custom
+    regions, and Advanced Chart remain separately priced add-ons.
 19. `settings.deep_split` is canonical, and top-level `deep_split` plus
     `split_options` is accepted only as a clearly labeled Studio compatibility
     shape.
@@ -734,7 +765,7 @@ cost-profile input.
     `assumed_extract_route` request field. Their visible processing labels come
     from the applied pipeline, while the public API continues to accept the
     optional per-document routing override.
-26. The simulator rate card displays all eleven unit prices, applies valid edits
+26. The simulator rate card displays all thirteen unit prices, applies valid edits
     atomically, and restores the public values when the session is cleared.
 27. Invalid, blank, negative, non-finite, scientific-notation, or range-inverting
     rate edits leave the previously applied simulator rates unchanged.
@@ -782,18 +813,33 @@ cost-profile input.
 41. The UI uses **Set up manually** and **Additional inputs**, omits redundant
     settings subheadings and ready-to-apply copy, and retains an accessible live
     stale-estimate status.
-42. Spreadsheet pricing, the API contract, estimator calculations, pricing
-    behavior, importer behavior, and policy decisions remain unchanged.
+42. Spreadsheet pricing remains unchanged and unsupported.
 43. Missing or explicit `legacy` standalone Parse profiles preserve the prior
     Standard/Complex estimates and the existing public rate-card identifier.
 44. Explicit `r-1` standalone Parse profiles use $10 per 1,000 processed pages,
     honor page ranges and Batch discount, ignore Legacy complexity and Agentic
     multipliers, and return the r‑1 Beta rate-card identifier.
-45. r‑1 custom prompts, OCR return, or Advanced Chart preserve the known base
-    subtotal but make the estimate incomplete with the excluded feature named;
-    promptless r‑1 Agentic scopes are rejected with corrective guidance.
+45. r‑1 custom prompts, OCR return, and Advanced Chart use the published add-on
+    rates without the Legacy Agentic multiplier; promptless r‑1 Agentic scopes
+    are rejected with corrective guidance.
 46. The footer version is an accessible disclosure, collapsed by default, whose
-    v0.1.33 note reads exactly **Added r‑1 Beta pricing.**
+    history lists **v0.1.34 — Added parsing add-on pricing.** above
+    **v0.1.33 — Added r‑1 Beta pricing.**
+47. The footer links **varinderpsaini@gmail.com** with a `mailto:` URL for
+    product feedback immediately above the version disclosure.
+48. Parse, Extract, and Split price OCR return at $2 per 1,000 processed pages,
+    prompted blocks or custom regions at $5 per 1,000 processed pages, and
+    Advanced Chart at $0.06 per detected chart.
+49. Missing chart counts preserve the known endpoint subtotal and set
+    `estimate_complete: false`; supplied likely and maximum counts create the
+    chart portion of the estimate range.
+50. Extract latency and Legacy Agentic multipliers apply only to their base page
+    rates, not optional parsing add-ons.
+51. `processing_context` prevents Extract or Split from rebilling parsing
+    add-ons for an existing `jobid://` Parse result, while document inputs remain
+    the default.
+52. Paid verification accepts both the older `usage` fields and the newer
+    `usage_breakdown` fields, including charts, OCR pages, and prompted blocks.
 
 ## 13. Official sources
 
@@ -806,6 +852,7 @@ cost-profile input.
 - https://docs.reducto.ai/configs/parse/page-ranges
 - https://docs.reducto.ai/configs/parse/chart-extraction
 - https://docs.reducto.ai/workflows/batch-queue
+- https://docs.reducto.ai/workflows/chaining-endpoints
 - https://docs.reducto.ai/v/legacy/migration-guide
 - https://docs.reducto.ai/extract/response-format
 - https://docs.reducto.ai/configs/split/deep-split

@@ -124,7 +124,7 @@ test("r-1 prices processed pages at $10 per 1,000 and honors page ranges and Bat
   assertClose(rangedBatchEstimate.parseHigh, 0.08, "r-1 Batch high estimate");
 });
 
-test("r-1 ignores Legacy complexity and Agentic multipliers while retaining its base", async () => {
+test("r-1 ignores Legacy complexity and Agentic multipliers while pricing prompts separately", async () => {
   const { estimatePipeline, normalizeRequest } =
     await importTypeScriptModule("../lib/pricing.ts");
   const estimate = estimatePipeline(
@@ -144,14 +144,16 @@ test("r-1 ignores Legacy complexity and Agentic multipliers while retaining its 
 
   assert.equal(estimate.parseLikelyComplexShare, 0);
   assert.equal(estimate.parseCostMultiplier, 1);
-  assert.equal(estimate.parseLow, 10);
-  assert.equal(estimate.parseLikely, 10);
-  assert.equal(estimate.parseHigh, 10);
-  assert.equal(estimate.estimateComplete, false);
-  assert.deepEqual(estimate.unpricedCostFactors, ["parse.r1_agentic_prompt"]);
+  assert.equal(estimate.parseLow, 15);
+  assert.equal(estimate.parseLikely, 15);
+  assert.equal(estimate.parseHigh, 15);
+  assert.equal(estimate.estimateComplete, true);
+  assert.deepEqual(estimate.unpricedCostFactors, []);
+  assert.equal(estimate.parsingAddOns.parse.prompted_pages, 1_000);
+  assert.equal(estimate.parsingAddOns.parse.prompted_usd, 5);
 });
 
-test("r-1 add-ons keep the known base and mark the estimate incomplete", async () => {
+test("r-1 uses the published OCR, prompt, and Advanced Chart add-on rates", async () => {
   const { estimatePipeline, normalizeRequest } =
     await importTypeScriptModule("../lib/pricing.ts");
   const cases = [
@@ -161,12 +163,12 @@ test("r-1 add-ons keep the known base and mark the estimate incomplete", async (
         settings: { model: "r-1" },
         enhance: { agentic: [{ scope: "table", prompt: "Normalize the table." }] },
       },
-      factor: "parse.r1_agentic_prompt",
+      expected: [15, 15, 15],
     },
     {
       name: "OCR return",
       parse: { settings: { model: "r-1", return_ocr_data: true } },
-      factor: "parse.r1_return_ocr_data",
+      expected: [12, 12, 12],
     },
     {
       name: "Advanced Chart",
@@ -177,7 +179,7 @@ test("r-1 add-ons keep the known base and mark the estimate incomplete", async (
         },
       },
       assumptions: { advanced_chart_counts: { likely: 10, maximum: 20 } },
-      factor: "parse.r1_advanced_chart",
+      expected: [10, 10.6, 11.2],
     },
   ];
 
@@ -192,15 +194,11 @@ test("r-1 add-ons keep the known base and mark the estimate incomplete", async (
       },
     });
     const estimate = estimatePipeline(input);
-    assert.equal(estimate.parseLow, 10, `${testCase.name} low base`);
-    assert.equal(estimate.parseLikely, 10, `${testCase.name} likely base`);
-    assert.equal(estimate.parseHigh, 10, `${testCase.name} high base`);
-    assert.equal(estimate.estimateComplete, false, `${testCase.name} completeness`);
-    assert.deepEqual(
-      estimate.unpricedCostFactors,
-      [testCase.factor],
-      `${testCase.name} excluded factor`,
-    );
+    assertClose(estimate.parseLow, testCase.expected[0], `${testCase.name} low`);
+    assertClose(estimate.parseLikely, testCase.expected[1], `${testCase.name} likely`);
+    assertClose(estimate.parseHigh, testCase.expected[2], `${testCase.name} high`);
+    assert.equal(estimate.estimateComplete, true, `${testCase.name} completeness`);
+    assert.deepEqual(estimate.unpricedCostFactors, []);
   }
 });
 
