@@ -1,8 +1,8 @@
-# Lumos — Product Specification v0.17
+# Lumos — Product Specification v0.18
 
 Status: working prototype
 
-Date: 2026-09-01
+Date: 2026-09-03
 
 ## 1. Product definition
 
@@ -41,6 +41,7 @@ The first release estimates these Reducto products:
 - Split
 - Deep Split
 - Edit
+- Spreadsheet Parse or Extract base usage from estimated non-empty cells
 
 Under the public list rates effective September 1, 2026, the base Parse page
 rate is included in Extract and Split pricing. Optional parsing add-ons remain
@@ -76,6 +77,10 @@ Examples of documented Reducto settings used by Lumos:
 - Extract/Split Advanced Chart: `parsing.enhance.agentic[].advanced_chart_agent`
 - Deep Split: `settings.deep_split: true`
 - Split page selection: `parsing.settings.page_range`
+- Standalone Parse spreadsheet settings: `parse.spreadsheet.clustering` and
+  `parse.spreadsheet.max_cell_count`
+- Extract spreadsheet settings: `extract.parsing.spreadsheet.clustering` and
+  `extract.parsing.spreadsheet.max_cell_count`
 
 The visual builder keeps these Reducto-native fields within their owning
 endpoint. It produces cost-focused configuration fragments for estimation; it
@@ -86,6 +91,7 @@ review and reapplication.
 Examples of Lumos-owned inputs:
 
 - `documents[].assumed_extract_route`
+- `documents[].estimated_non_empty_cells` for recognized spreadsheet filenames
 - `lumos_assumptions.conditional_extract_routing`
 - `lumos_assumptions.likely_deep_extract_share`
 - `lumos_assumptions.estimated_extract_fields_per_page`
@@ -96,9 +102,13 @@ Examples of Lumos-owned inputs:
 - `lumos_assumptions.prompted_blocks_or_custom_regions`
 - `lumos_assumptions.unpriced_cost_factors`
 
-These inputs appear in a visibly separate **Additional inputs** area while
-remaining serialized under `lumos_assumptions`. They must never be presented as
-Reducto pipeline settings.
+Pipeline-wide estimator inputs appear in a visibly separate **Additional
+inputs** area and remain serialized under `lumos_assumptions`. Document-specific
+values remain on their matching metadata row. None are presented as Reducto
+pipeline settings.
+
+`estimated_non_empty_cells` is document metadata rather than a Reducto setting.
+It is edited on the matching spreadsheet row.
 
 Billing tags such as `page`, `html_page`, `docx_native_page`, `agentic`,
 `complex`, `chart_agent`, and `billable_spreadsheet_pages` are returned usage
@@ -122,8 +132,11 @@ estimate. It does not make the preflight result an exact bill.
 ## 4. Primary flow
 
 1. A user selects one or more documents.
-2. Lumos estimates page counts in browser memory where practical.
-3. Every count remains editable.
+2. Lumos estimates ordinary-document page counts in browser memory where
+   practical. For a recognized spreadsheet filename, the user enters the
+   expected non-empty cells after relevant exclusions or filtering. Lumos never
+   inspects workbook contents.
+3. Every page or cell count remains editable.
 4. The developer configures cost-relevant Reducto fields in the five endpoint
    tabs ordered Parse (standalone), Classify, Extract, Split, and Edit, supplies
    visibly separate **Additional inputs** where needed, or imports operation
@@ -142,13 +155,13 @@ estimate. It does not make the preflight result an exact bill.
 Ordinary estimation does not call Reducto and does not incur a Reducto fee.
 
 The simulator exposes only the four numbered section headings above. **1.
-Documents** contains upload and editable page-count controls without a general
-introductory paragraph or an always-visible spreadsheet warning; a spreadsheet
-warning appears only when the selected input actually blocks estimation. **2.
-Pipeline configuration** owns the manual/import inputs and the shared profile
-copy action. **3. Policy** contains the `policy.max_total_usd` field labeled
-**Maximum cost, USD** and the adjacent rate-card link. **4. Estimate** owns the
-result without duplicating that link.
+Documents** shows pages for ordinary files and **Estimated non-empty cells** for
+spreadsheets, with page and cell totals reported separately. A blank spreadsheet
+count preserves the known subtotal and marks the result incomplete instead of
+blocking all estimation. **2. Pipeline configuration** owns the manual/import
+inputs and the shared profile copy action. **3. Policy** contains the
+`policy.max_total_usd` field labeled **Maximum cost, USD** and the adjacent
+rate-card link. **4. Estimate** owns the result without duplicating that link.
 
 Editing an applied pipeline suppresses the estimate and announces the stale
 state through the existing live status without a second ready-to-apply sentence.
@@ -179,6 +192,12 @@ Lumos uses the published list rates effective September 1, 2026:
 | Edit | $60 / 1,000 pages |
 | Edit, fully prefilled page | $15 / 1,000 pages |
 
+Spreadsheet estimates use a Lumos default of `$0.01 / credit`. Accurate
+clustering uses 1 credit per 1,000 estimated non-empty cells; Fast and Disabled
+use 1 credit per 5,000. Partial credits are prorated. This is an estimator
+default, not a universal Reducto price; users should consult their Reducto rate
+card.
+
 Legacy and non-Parse responses retain `reducto-public-2026-09-01`. An explicit
 standalone r‑1 estimate returns `reducto-public-2026-09-01-r1-beta`.
 
@@ -189,11 +208,11 @@ source of truth.
 
 The **Default rate card** or **Default rate card (custom)** link sits in **3.
 Policy** beside the **Maximum cost, USD** control and opens an on-demand dialog
-with all thirteen numeric unit prices. **4. Estimate** does not repeat the link, and
-the configuration footer contains only **Apply configuration**. Page prices
-are edited as dollars per 1,000 pages, while Advanced Chart Agent is edited as
-dollars per detected chart. The dialog marks the rates selected by the current
-applied configuration.
+with all fourteen numeric unit prices. **4. Estimate** does not repeat the link,
+and the configuration footer contains only **Apply configuration**. Page prices
+are edited as dollars per 1,000 pages, Advanced Chart Agent as dollars per
+detected chart, and Spreadsheet credit as dollars per credit. The dialog marks
+the rates selected by the current applied configuration.
 
 Edits remain drafts until **Apply rates** is selected. Applied values replace
 the corresponding built-in prices for simulator calculations during the current
@@ -219,10 +238,13 @@ active.
 - Extract profiles at 100 estimated fields per page are supported. Above 100,
   Lumos preserves the known page estimate and marks the unpublished dense-field
   surcharge as incomplete.
-- Spreadsheet pricing is not guessed. Reducto measures spreadsheet usage from
-  cells and directs customers to their own rate card, so Lumos returns an
-  unsupported response until cell units and a rate are available. The deferred
-  implementation is defined in `SPREADSHEET_SUPPORT_SPEC.md`.
+- XLS, XLSX, XLSM, XLTX, XLTM, CSV, and QPW filenames are recognized after URL
+  query or fragment removal and are never page-priced. Standalone Parse or
+  Extract charges the cell-based base once. Deep or conditional Extract,
+  latency, Legacy complexity, Agentic, and Batch modifiers affect ordinary
+  documents only. Missing cell counts and spreadsheet Classify, Split, Edit,
+  OCR, prompted-processing, or chart work preserve the known subtotal but make
+  the estimate incomplete.
 - Advanced Chart Agent is priced for Parse, Extract, and Split when endpoint
   chart-count bounds are supplied. Without them, the known page subtotal remains
   visible but incomplete. OCR data return and prompted blocks or custom regions
@@ -230,7 +252,8 @@ active.
   Extract's latency 2x multiplier affect only their base page rates.
 - When Extract or Split receives a `jobid://` input, parsing and its add-ons were
   billed on the original Parse job. `processing_context` records that per-request
-  fact so Lumos does not charge those add-ons again.
+  fact so Lumos does not charge those add-ons again. The selected Extract base,
+  including its cell-based spreadsheet base, remains part of the Extract job.
 - `settings.include_images: true` is documented as increasing Extract cost, but
   no numeric adjustment appears in the September 1 public list-rate table. The
   importer surfaces that omission, marks the dollar result incomplete, and
@@ -244,15 +267,20 @@ active.
     {
       "name": "contract.pdf",
       "pages": 18
+    },
+    {
+      "name": "model.xlsx",
+      "estimated_non_empty_cells": 125000
     }
   ],
   "pipeline": {
     "parse": null,
-    "classify": {
-      "page_range": { "start": 1, "end": 5 }
-    },
+    "classify": null,
     "extract": {
-      "settings": { "deep_extract": false, "optimize_for_latency": false, "include_images": false }
+      "settings": { "deep_extract": false, "optimize_for_latency": false, "include_images": false },
+      "parsing": {
+        "spreadsheet": { "clustering": "accurate" }
+      }
     },
     "split": null,
     "edit": null,
@@ -311,7 +339,14 @@ const response = await fetch("https://your-lumos-site/api/estimate", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({
-    documents: uploadedDocuments.map(({ name, pages }) => ({ name, pages })),
+    documents: uploadedItems.map((item) =>
+      item.kind === "spreadsheet"
+        ? {
+            name: item.name,
+            estimated_non_empty_cells: item.estimatedNonEmptyCells,
+          }
+        : { name: item.name, pages: item.pages },
+    ),
     pipeline,
     policy: { max_total_usd: 10 },
   }),
@@ -325,7 +360,7 @@ their contents. Its request fields are:
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `documents` | Yes | An array of metadata rows. Each item contains the original filename in `name` and its page count in `pages`; file contents are not accepted. |
+| `documents` | Yes | Metadata rows. Ordinary files contain `name` and `pages`; recognized spreadsheet files contain `name` and optional `estimated_non_empty_cells`. File contents are not accepted. |
 | `pipeline` | Yes | The Lumos profile generated after the simulator applies a configuration, whether it was set up manually or imported from Reducto. The application stores this profile. |
 | `policy.max_total_usd` | No | The maximum acceptable job cost in USD. It defaults to `10` when omitted. |
 | `processing_context` | No | Per-request Extract or Split input reuse. Set `extract_input` or `split_input` to `jobid` when the endpoint receives an already billed Parse result; document input is the default. |
@@ -333,7 +368,7 @@ their contents. Its request fields are:
 **Copy Lumos profile** sits in a shared action row beneath the simulator's manual
 and import panels. It is available only for a clean, valid applied
 configuration. Manual setup and Reducto imports are both converted to the same
-canonical `PublicPipeline`; the action copies only that profile, excluding
+generated `PublicPipeline`; the action copies only that profile, excluding
 documents, policy, simulator-only rate edits, and preserved raw Reducto JSON.
 Lumos does not host profiles, issue profile IDs, or persist copied profiles; the
 integrating application owns profile storage.
@@ -378,7 +413,9 @@ Redundant settings subheadings are omitted. Estimator-owned values appear under
   under Figure; `queue_priority`; and `settings.page_range`. Its assumptions
   are expected Complex-page share and, when needed, likely and maximum chart
   counts. r‑1 keeps queue priority, page range, and the published parsing
-  add-ons, but hides Legacy-only complexity and Agentic controls.
+  add-ons, but hides Legacy-only complexity and Agentic controls. When relevant,
+  compact Spreadsheet controls set `spreadsheet.clustering` and the optional
+  `spreadsheet.max_cell_count` safety limit.
 - **Classify** exposes its context `page_range` and has no estimator assumption.
 - **Extract** is described as **Return structured fields from the document,
   parsing included.** It exposes `settings.include_images`,
@@ -386,7 +423,8 @@ Redundant settings subheadings are omitted. Estimator-owned values appear under
   Its assumptions are conditional Standard/Deep routing, expected Deep Extract
   share, expected fields per page, and optional chart counts. Nested parsing
   controls cover OCR data return, prompted blocks/custom regions, and Advanced
-  Chart.
+  Chart. Compact Spreadsheet controls use the same fields within
+  `parsing.spreadsheet`.
 - **Split** is described as **Separate a document into sections and partitions,
   parsing included.** It exposes `settings.deep_split` and
   `parsing.settings.page_range`, plus the same nested parsing add-ons and optional
@@ -439,7 +477,7 @@ a neutral profile, enables only operations established by the pasted
 configurations, and sets every other operation to `null`. It must never
 shallow-merge into the prior profile. This prevents a previous Classify, Split,
 or Edit setting from surviving an Extract-only import. Uploaded document rows,
-edited page counts, and the budget remain unchanged.
+edited page or cell counts, and the budget remain unchanged.
 
 ### 7.2 Accepted JSON and operation inference
 
@@ -477,6 +515,8 @@ Supported pricing mappings include:
 | nested `parsing.settings.return_ocr_data: true` | the matching Extract or Split parsing settings | Add $2 per 1,000 processed endpoint pages |
 | nested `parsing.enhance.agentic[].prompt` | the matching Extract or Split parsing enhance group | Add $5 per 1,000 processed endpoint pages |
 | nested Advanced Chart Agent | the matching Extract or Split parsing enhance group plus endpoint chart-count assumptions | Add $0.06 per detected chart, or keep the known subtotal incomplete when counts are absent |
+| standalone `spreadsheet.clustering` and `spreadsheet.max_cell_count` | `parse.spreadsheet` | Set the spreadsheet credit ratio and preserve the Reducto safety limit |
+| nested `parsing.spreadsheet.clustering` and `max_cell_count` | matching Extract or Split `parsing.spreadsheet` | Preserve endpoint-owned spreadsheet settings; Extract can price the base while Split spreadsheet work remains excluded |
 | Classify configuration with `page_range` | `classify.page_range` | Price Classify context pages |
 | Split configuration | `split` is present | Standard Split unless Deep Split is enabled |
 | `settings.deep_split: true` | `split.settings.deep_split: true` | Current documented Deep Split setting |
@@ -564,18 +604,11 @@ The importer must block these cases instead of inventing a profile:
 - **Conflicting configuration:** incompatible duplicate operation objects or
   multiple non-null page selections cannot be resolved by choosing the cheaper
   interpretation.
-- **Spreadsheet input:** an uploaded spreadsheet filename or document metadata
-  identifying spreadsheet input enters the existing unsupported state. Reducto
-  measures this work from cells and directs customers to their own rate card, so
-  a page-based dollar estimate is invalid.
 
-Every `spreadsheet` group is informational rather than proof of spreadsheet
-input, even when settings such as `split_large_tables.enabled` are true.
-Studio-generated Parse configurations may include that group for ordinary
-documents, and per-operation configuration contains no input file. The importer
-may show a nonblocking caution, but only an uploaded spreadsheet filename or
-document metadata identifying spreadsheet input enters the spreadsheet
-unsupported state.
+A `spreadsheet` configuration group does not identify the input file.
+Lumos recognizes spreadsheet work only from the filename. Supported
+`clustering` and `max_cell_count` values hydrate the relevant builder panel;
+other accepted spreadsheet fields remain preserved for review.
 
 Documented settings with an unquantified charge, such as Extract image context,
 remain applicable only as incomplete estimates. Lumos shows the known base,
@@ -588,10 +621,40 @@ Studio compatibility shape must never change Lumos from its explicit September
 
 ## 8. Calculation rules
 
+Spreadsheet rules:
+
+1. Recognize XLS, XLSX, XLSM, XLTX, XLTM, CSV, and QPW filenames
+   case-insensitively after stripping a URL query or fragment.
+2. Require ordinary documents to supply a positive whole-number `pages` value.
+   Spreadsheet rows instead accept optional `estimated_non_empty_cells`; when
+   present it must be a safe, nonnegative whole number. Do not accept `pages` or
+   `assumed_extract_route` on spreadsheet rows.
+3. Exclude spreadsheet rows from every page count and page-priced component.
+4. Use Accurate clustering when `clustering` is omitted. Calculate credits as
+   cells divided by 1,000 for Accurate or cells divided by 5,000 for Fast and
+   Disabled; prorate partial credits without rounding.
+5. Multiply credits by the `$0.01 / credit` Lumos default. A simulator-only
+   override may replace it locally, while API requests and previews keep `$0.01`.
+6. Charge the spreadsheet base once for standalone Parse or Extract. Do not
+   apply Deep or conditional Extract, latency, Legacy complexity, Agentic, or
+   Batch modifiers to that base.
+7. Treat `max_cell_count` as a Reducto per-workbook safety limit, not a workload
+   estimate. Reject a known count above an active limit; equality is valid.
+8. Keep spreadsheet Classify, Split, Edit, OCR return, prompted processing, and
+   Advanced Chart contributions unpriced. Show the known subtotal and name each
+   excluded factor.
+9. A missing cell count likewise leaves the known subtotal visible with
+   `estimate_complete: false`.
+10. For an incomplete result, return `deny` only when the known low subtotal
+    already exceeds the budget; otherwise return `review`. Complete estimates
+    retain the normal range policy.
+
+Ordinary-document rules:
+
 For each request, Lumos must:
 
 1. Validate page counts and route assumptions.
-2. Reject spreadsheet page-price guesses.
+2. Keep ordinary page pricing independent from spreadsheet cell pricing.
 3. Validate that a Classify `page_range` contains whole, 1-indexed page numbers
    and covers one to ten pages, following Reducto's Classify configuration guide.
 4. Count each PDF range inclusively and stop at the document's last page. For
@@ -662,6 +725,19 @@ The API returns:
 - `estimate_complete`
 - `unpriced_cost_factors`
 
+When at least one spreadsheet filename is present, the response also includes:
+
+- `breakdown.spreadsheet_usd` for the known cell-based base amount;
+- `usage.spreadsheets` with document count, estimated cells, missing-count
+  count, credits, clustering, `max_cell_count`, and the priced base endpoint;
+  and
+- `spreadsheet_rate_basis` with `usd_per_credit: 0.01`,
+  `basis: "lumos_default"`, and a reminder to consult the caller's Reducto rate
+  card.
+
+These fields are omitted for ordinary-only requests. Page-pricing rate-card
+identifiers remain unchanged.
+
 No field should claim that an estimate is exact before the pipeline runs.
 Unknown request, document, pipeline, operation, settings, and Lumos-assumption
 fields are rejected at the API boundary instead of being ignored.
@@ -680,7 +756,8 @@ fields are rejected at the API boundary instead of being ignored.
 - Document processing labels are derived from the applied configuration; the
   simulator neither displays a route selector nor sends
   `assumed_extract_route` in its estimate request.
-- Page detection is best effort and every count is editable.
+- Page detection is best effort for ordinary documents; spreadsheet cell counts
+  are user-entered. Every count is editable.
 - Lumos does not use browser storage for document content.
 - Clearing the session removes selected files and results from page state.
 - The optional verification request does not persist the API key, files, or
@@ -690,8 +767,9 @@ fields are rejected at the API boundary instead of being ignored.
 
 Supported upload types in the current interface are a documented subset of
 Reducto formats: PDF, PNG, JPEG, GIF, HEIC, BMP, DOC, DOCX, PPT, PPTX, XLS,
-XLSX, and CSV. Spreadsheet uploads are recognized but not assigned a public
-dollar estimate.
+XLSX, XLSM, XLTX, XLTM, CSV, and QPW. Lumos identifies a spreadsheet from its
+filename but does not inspect, parse, or upload workbook contents during
+estimation or paid verification.
 
 ## 11. Paid verification
 
@@ -699,7 +777,8 @@ Verification must:
 
 - require a Reducto API key and deployed `pipeline_id`;
 - require an explicit acknowledgement that paid processing will begin;
-- upload each real file to Reducto;
+- reject spreadsheet files before any upload;
+- upload each accepted non-spreadsheet file to Reducto;
 - call the documented Pipeline endpoint with `input` and `pipeline_id`;
 - return job IDs and usage only;
 - omit extracted document contents;
@@ -720,8 +799,9 @@ cost-profile input.
 4. Standard and Deep Extract calculations match the September 1 list rates.
 5. Standard and Deep Split calculations match the September 1 list rates.
 6. Classify rejects ranges longer than Reducto's documented limit of ten pages.
-7. Spreadsheet inputs return an unsupported error rather than a page-based
-   dollar value.
+7. Spreadsheet filenames never receive page pricing; supplied non-empty-cell
+   counts use the selected clustering credit ratio and Lumos default credit
+   rate.
 8. Parsing is never added on top of Extract or Split.
 9. Equal bounds are reported with `has_range: false`, not as an exact bill.
 10. Paid verification cannot run without explicit confirmation.
@@ -748,8 +828,8 @@ cost-profile input.
 19. `settings.deep_split` is canonical, and top-level `deep_split` plus
     `split_options` is accepted only as a clearly labeled Studio compatibility
     shape.
-20. Spreadsheet inputs remain unsupported rather than receiving a page-based
-    price, while any `spreadsheet` configuration group alone stays informational.
+20. A `spreadsheet` settings group alone remains informational; the filename
+    extension identifies spreadsheet input.
 21. Exactly 100 Extract fields remains complete, while more than 100 keeps the
     known page estimate visible and marks the dense surcharge incomplete.
 22. A chart-enabled standalone Parse without chart counts still returns its
@@ -765,8 +845,9 @@ cost-profile input.
     `assumed_extract_route` request field. Their visible processing labels come
     from the applied pipeline, while the public API continues to accept the
     optional per-document routing override.
-26. The simulator rate card displays all thirteen unit prices, applies valid edits
-    atomically, and restores the public values when the session is cleared.
+26. The simulator rate card displays all fourteen unit prices, including
+    **Spreadsheet credit (Lumos default)**, applies valid edits atomically, and
+    restores the default values when the session is cleared.
 27. Invalid, blank, negative, non-finite, scientific-notation, or range-inverting
     rate edits leave the previously applied simulator rates unchanged.
 28. Custom simulator rates can change the estimate and budget decision without
@@ -787,8 +868,8 @@ cost-profile input.
 33. The manual builder produces cost-focused fragments rather than claiming to
     replace complete Reducto endpoint configuration, and imported neutral fields
     remain preserved for review.
-34. The builder revision does not change the public API request, response,
-    built-in rate-card behavior, or spreadsheet unsupported boundary.
+34. The builder preserves the strict public API boundary while adding the
+    Reducto-shaped spreadsheet fields used by cell pricing.
 35. Parse (standalone) is mutually exclusive with Extract and Split in the
     visual builder while retaining its inactive values; Classify and Edit remain
     additive, and imported or API-supplied bundled Parse profiles remain
@@ -813,7 +894,9 @@ cost-profile input.
 41. The UI uses **Set up manually** and **Additional inputs**, omits redundant
     settings subheadings and ready-to-apply copy, and retains an accessible live
     stale-estimate status.
-42. Spreadsheet pricing remains unchanged and unsupported.
+42. Spreadsheet rows accept safe nonnegative whole cell counts, keep blanks
+    incomplete, remain excluded from page pricing, and never cause workbook
+    contents to be inspected or uploaded.
 43. Missing or explicit `legacy` standalone Parse profiles preserve the prior
     Standard/Complex estimates and the existing public rate-card identifier.
 44. Explicit `r-1` standalone Parse profiles use $10 per 1,000 processed pages,
@@ -823,7 +906,8 @@ cost-profile input.
     rates without the Legacy Agentic multiplier; promptless r‑1 Agentic scopes
     are rejected with corrective guidance.
 46. The footer version is an accessible disclosure, collapsed by default, whose
-    history lists **v0.1.34 — Added parsing add-on pricing.** above
+    history lists **v0.1.35 — Added spreadsheet cell pricing.** above
+    **v0.1.34 — Added parsing add-on pricing.** above
     **v0.1.33 — Added r‑1 Beta pricing.**
 47. The footer links **varinderpsaini@gmail.com** with a `mailto:` URL for
     product feedback immediately above the version disclosure.
@@ -840,6 +924,32 @@ cost-profile input.
     the default.
 52. Paid verification accepts both the older `usage` fields and the newer
     `usage_breakdown` fields, including charts, OCR pages, and prompted blocks.
+53. Spreadsheet arithmetic is exact before response formatting: 100,000
+    Accurate cells produce 100 credits and `$1.00`; 100,000 Fast or Disabled
+    cells produce 20 credits and `$0.20`; and 1,500 Accurate cells produce 1.5
+    credits and `$0.015`.
+54. Spreadsheet filename matching covers all seven extensions, case variants,
+    and URL query or fragment suffixes, while invalid, fractional, negative, or
+    unsafe cell counts fail validation and zero remains valid.
+55. `max_cell_count` is only a per-workbook safety cap: equality is allowed,
+    overage fails validation, and a missing estimate is never replaced by the
+    cap.
+56. Standalone Parse or Extract charges the spreadsheet cell base once. Mixed
+    document batches and bundled Parse never double-charge or page-price a
+    spreadsheet row, and ordinary modifiers do not change its base.
+57. Missing cell counts or spreadsheet Classify, Split, Edit, OCR, prompted
+    processing, and chart factors preserve the known subtotal and require
+    `review` unless that subtotal already requires `deny`.
+58. Spreadsheet response fields and the Lumos-default rate basis appear only
+    when a spreadsheet filename is present; ordinary-only response shapes and
+    rate-card identifiers remain unchanged.
+59. A custom simulator spreadsheet credit rate never enters the copied profile,
+    generated API request, or public API calculation.
+60. Spreadsheet files are rejected by paid verification before any upload.
+61. Extract `jobid://` reuse retains the Extract spreadsheet base while
+    suppressing nested parsing add-ons already billed on the original Parse job.
+    Split `jobid://` reuse does not report the already billed spreadsheet Parse
+    base as another missing cost.
 
 ## 13. Official sources
 
@@ -850,6 +960,7 @@ cost-profile input.
 - https://docs.reducto.ai/configs/extract/deep-extract
 - https://docs.reducto.ai/extract/overview
 - https://docs.reducto.ai/configs/parse/page-ranges
+- https://docs.reducto.ai/configs/parse/spreadsheet
 - https://docs.reducto.ai/configs/parse/chart-extraction
 - https://docs.reducto.ai/workflows/batch-queue
 - https://docs.reducto.ai/workflows/chaining-endpoints

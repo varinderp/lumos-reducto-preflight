@@ -1,4 +1,7 @@
-import type { PublicPipeline } from "@/lib/pricing";
+import type {
+  PublicPipeline,
+  PublicSpreadsheetConfiguration,
+} from "@/lib/pricing";
 
 export type ReductoImportedOperation =
   | "parse"
@@ -333,6 +336,41 @@ function optionalBoolean(owner: JsonObject | undefined, key: string, label: stri
   return owner[key] as boolean;
 }
 
+function inspectSpreadsheetConfig(
+  spreadsheet: JsonObject | undefined,
+  label: string,
+): PublicSpreadsheetConfiguration | null {
+  if (!spreadsheet) return null;
+  const rawClustering = spreadsheet.clustering;
+  if (
+    rawClustering !== undefined &&
+    rawClustering !== "accurate" &&
+    rawClustering !== "fast" &&
+    rawClustering !== "disabled"
+  ) {
+    throw new Error(`${label}.clustering must be accurate, fast, or disabled.`);
+  }
+  const rawMaxCellCount = spreadsheet.max_cell_count;
+  if (
+    rawMaxCellCount !== undefined &&
+    rawMaxCellCount !== null &&
+    (typeof rawMaxCellCount !== "number" ||
+      !Number.isSafeInteger(rawMaxCellCount) ||
+      rawMaxCellCount < 0)
+  ) {
+    throw new Error(`${label}.max_cell_count must be a whole number of 0 or greater, or null.`);
+  }
+  return {
+    clustering:
+      rawClustering === "fast" || rawClustering === "disabled"
+        ? rawClustering
+        : "accurate",
+    ...(typeof rawMaxCellCount === "number"
+      ? { max_cell_count: rawMaxCellCount }
+      : {}),
+  };
+}
+
 function containsAnyKey(owner: JsonObject | undefined, keys: readonly string[]) {
   return Boolean(owner && keys.some((key) => hasOwn(owner, key)));
 }
@@ -598,6 +636,10 @@ function inspectParseConfig(config: JsonObject) {
     ["enabled", "size"],
     "Parse spreadsheet.split_large_tables",
   );
+  const canonicalSpreadsheet = inspectSpreadsheetConfig(
+    spreadsheet,
+    "Parse spreadsheet",
+  );
   const agentic = enhance?.agentic;
   if (agentic !== undefined && agentic !== null && !Array.isArray(agentic)) {
     throw new Error("Parse enhance.agentic must be an array.");
@@ -706,7 +748,7 @@ function inspectParseConfig(config: JsonObject) {
     promptedBlocks:
       canonicalAgentic?.some((mode) => typeof mode.prompt === "string") === true,
     queuePriority: canonicalQueuePriority,
-    spreadsheetConfig: hasOwn(config, "spreadsheet"),
+    spreadsheetConfig: canonicalSpreadsheet,
   };
 }
 
@@ -736,10 +778,25 @@ function mergeParseInspections(
     }
   }
 
-  return {
-    ...first.value,
-    spreadsheetConfig: present.some((source) => source.value.spreadsheetConfig),
-  };
+  const spreadsheetSources = present.filter(
+    (source) => source.value.spreadsheetConfig !== null,
+  );
+  const spreadsheetConfig = spreadsheetSources[0]?.value.spreadsheetConfig ?? null;
+  if (
+    spreadsheetConfig &&
+    spreadsheetSources.some(
+      (source) =>
+        source.value.spreadsheetConfig?.clustering !== spreadsheetConfig.clustering ||
+        (source.value.spreadsheetConfig?.max_cell_count ?? null) !==
+          (spreadsheetConfig.max_cell_count ?? null),
+    )
+  ) {
+    throw new Error(
+      "Spreadsheet clustering and max_cell_count conflict across the bundled Parse settings.",
+    );
+  }
+
+  return { ...first.value, spreadsheetConfig };
 }
 
 function inspectExtractConfig(config: JsonObject) {
@@ -951,7 +1008,7 @@ function analyzeConfigurations(configurations: JsonObject[]): ReductoCodeImportR
       splitParse?.spreadsheetConfig
     ) {
       warnings.push(
-        "A Parse spreadsheet settings group was found. It does not identify the uploaded file type, and Lumos currently excludes spreadsheet documents from calculations.",
+        "Spreadsheet settings were imported. Lumos uses them only when a spreadsheet filename and estimated non-empty-cell count are provided.",
       );
     }
     if (split?.compatibilityFields.length) {
@@ -1072,6 +1129,9 @@ function analyzeConfigurations(configurations: JsonObject[]): ReductoCodeImportR
           ? {}
           : { enhance: { agentic: inspection.canonicalAgentic } }),
         ...(Object.keys(settings).length > 0 ? { settings } : {}),
+        ...(inspection.spreadsheetConfig
+          ? { spreadsheet: inspection.spreadsheetConfig }
+          : {}),
       };
       return Object.keys(result).length > 0 ? result : undefined;
     };
@@ -1105,6 +1165,9 @@ function analyzeConfigurations(configurations: JsonObject[]): ReductoCodeImportR
                 }),
             ...(topLevelParse.queuePriority
               ? { queue_priority: topLevelParse.queuePriority }
+              : {}),
+            ...(topLevelParse.spreadsheetConfig
+              ? { spreadsheet: topLevelParse.spreadsheetConfig }
               : {}),
           }
         : includedDownstreamParse

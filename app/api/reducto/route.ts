@@ -1,3 +1,5 @@
+import { isSpreadsheetFilename } from "@/lib/pricing";
+
 const REDUCTO_ORIGIN = "https://platform.reducto.ai";
 const MAX_FILES = 15;
 const MAX_FILE_BYTES = 100 * 1024 * 1024;
@@ -60,6 +62,15 @@ export async function POST(request: Request) {
     }
     if (!files.length || files.length > MAX_FILES) {
       return Response.json({ error: `Upload between 1 and ${MAX_FILES} files.` }, { status: 400 });
+    }
+    if (files.some((file) => isSpreadsheetFilename(file.name))) {
+      return Response.json(
+        {
+          error:
+            "Spreadsheet verification is unavailable because Lumos does not upload workbook contents.",
+        },
+        { status: 400 },
+      );
     }
     if (files.some((file) => file.size > MAX_FILE_BYTES)) {
       return Response.json({ error: "Direct verification supports files up to 100 MB each." }, { status: 413 });

@@ -1,4 +1,5 @@
 import {
+  DEFAULT_PRICING_UNIT_RATES,
   estimatePipeline,
   normalizeRequest,
   R1_RATE_CARD,
@@ -11,28 +12,33 @@ export async function POST(request: Request) {
     const payload = (await request.json()) as PublicEstimateRequest;
     const input = normalizeRequest(payload);
     const estimate = estimatePipeline(input);
+    const hasSpreadsheets = estimate.spreadsheetDocuments > 0;
+    const usd = (value: number) => Number(value.toFixed(hasSpreadsheets ? 6 : 4));
 
     return Response.json({
       decision: estimate.decision,
       estimate: {
-        low_usd: Number(estimate.low.toFixed(4)),
-        likely_usd: Number(estimate.likely.toFixed(4)),
-        high_usd: Number(estimate.high.toFixed(4)),
+        low_usd: usd(estimate.low),
+        likely_usd: usd(estimate.likely),
+        high_usd: usd(estimate.high),
         currency: "USD",
       },
       breakdown: {
-        parse_low_usd: Number(estimate.parseLow.toFixed(4)),
-        parse_likely_usd: Number(estimate.parseLikely.toFixed(4)),
-        parse_high_usd: Number(estimate.parseHigh.toFixed(4)),
-        classify_usd: Number(estimate.classifyCost.toFixed(4)),
-        extract_low_usd: Number(estimate.extractLow.toFixed(4)),
-        extract_likely_usd: Number(estimate.extractLikely.toFixed(4)),
-        extract_high_usd: Number(estimate.extractHigh.toFixed(4)),
-        split_usd: Number(estimate.splitCost.toFixed(4)),
-        split_low_usd: Number(estimate.splitLow.toFixed(4)),
-        split_likely_usd: Number(estimate.splitLikely.toFixed(4)),
-        split_high_usd: Number(estimate.splitHigh.toFixed(4)),
-        edit_usd: Number(estimate.editCost.toFixed(4)),
+        parse_low_usd: usd(estimate.parseLow),
+        parse_likely_usd: usd(estimate.parseLikely),
+        parse_high_usd: usd(estimate.parseHigh),
+        classify_usd: usd(estimate.classifyCost),
+        extract_low_usd: usd(estimate.extractLow),
+        extract_likely_usd: usd(estimate.extractLikely),
+        extract_high_usd: usd(estimate.extractHigh),
+        split_usd: usd(estimate.splitCost),
+        split_low_usd: usd(estimate.splitLow),
+        split_likely_usd: usd(estimate.splitLikely),
+        split_high_usd: usd(estimate.splitHigh),
+        edit_usd: usd(estimate.editCost),
+        ...(hasSpreadsheets
+          ? { spreadsheet_usd: usd(estimate.spreadsheetCost) }
+          : {}),
         parsing_add_ons: estimate.parsingAddOns,
       },
       usage: {
@@ -60,12 +66,28 @@ export async function POST(request: Request) {
           extract: estimate.parsingAddOns.extract.charts,
           split: estimate.parsingAddOns.split.charts,
         },
+        ...(hasSpreadsheets
+          ? {
+              spreadsheets: {
+                documents: estimate.spreadsheetDocuments,
+                estimated_non_empty_cells: estimate.spreadsheetCellsEstimated,
+                documents_missing_cell_count:
+                  estimate.spreadsheetDocumentsMissingCellCount,
+                credits: estimate.spreadsheetCredits,
+                clustering: estimate.spreadsheetClustering,
+                max_cell_count: estimate.spreadsheetMaxCellCount,
+                base_endpoint: estimate.spreadsheetBaseEndpoint,
+              },
+            }
+          : {}),
       },
       assumptions_used: {
-        ...(estimate.parseMode === "standalone" && estimate.parseModel === "legacy"
+        ...(estimate.parseMode === "standalone" &&
+        estimate.parseModel === "legacy" &&
+        estimate.parsePages > 0
           ? { likely_complex_parse_share: estimate.parseLikelyComplexShare }
           : {}),
-        ...(estimate.parseAdvancedChartCounts
+        ...(estimate.parseAdvancedChartCounts && estimate.parsePages > 0
           ? {
               advanced_chart_counts: {
                 likely: estimate.parseAdvancedChartCounts.likely,
@@ -73,11 +95,20 @@ export async function POST(request: Request) {
               },
             }
           : {}),
-        ...(input.pipeline.extractMode === "conditional"
+        ...(input.pipeline.extractMode === "conditional" && estimate.extractPages > 0
           ? { likely_deep_extract_share: input.pipeline.deepShare }
           : {}),
       },
       rate_card: estimate.parseModel === "r-1" ? R1_RATE_CARD : RATE_CARD,
+      ...(hasSpreadsheets
+        ? {
+            spreadsheet_rate_basis: {
+              usd_per_credit: DEFAULT_PRICING_UNIT_RATES.spreadsheetCredit,
+              basis: "lumos_default",
+              note: "Consult your Reducto rate card.",
+            },
+          }
+        : {}),
       has_range: estimate.low !== estimate.high,
       estimate_complete: estimate.estimateComplete,
       unpriced_cost_factors: estimate.unpricedCostFactors,

@@ -8,6 +8,8 @@ import type {
   PublicEstimateRequest,
   PublicPageRange,
   PublicPipeline,
+  PublicSpreadsheetConfiguration,
+  SpreadsheetClustering,
 } from "./pricing";
 
 export type ManualEndpoint = "parse" | "classify" | "extract" | "split" | "edit";
@@ -37,6 +39,12 @@ export type ManualParsingAddOnDraft = {
   inputKind: EndpointInputKind;
 };
 
+export type ManualSpreadsheetDraft = {
+  configured: boolean;
+  clustering: SpreadsheetClustering;
+  maxCellCount: string;
+};
+
 /**
  * String values deliberately remain strings while a user edits the form. This
  * lets the builder represent empty and partially entered values without ever
@@ -56,6 +64,7 @@ export type ManualPipelineDraft = {
     /** Optional parsing add-ons use the same public rates for Legacy and r-1. */
     returnOcrData?: boolean;
     promptedBlocks: boolean;
+    spreadsheet: ManualSpreadsheetDraft;
     preservedAgentic?: ReductoJsonObject[];
   };
   classify: { enabled: boolean; start: string; end: string };
@@ -65,11 +74,13 @@ export type ManualPipelineDraft = {
     optimizeForLatency: boolean;
     pageSelection: ManualPageSelectionDraft;
     parsingAddOns: ManualParsingAddOnDraft;
+    spreadsheet: ManualSpreadsheetDraft;
   };
   split: {
     mode: ManualSplitMode;
     pageSelection: ManualPageSelectionDraft;
     parsingAddOns: ManualParsingAddOnDraft;
+    spreadsheet: ManualSpreadsheetDraft;
   };
   edit: { enabled: boolean; fullyPrefilledPages: string };
   assumptions: {
@@ -111,6 +122,7 @@ export const DEFAULT_MANUAL_PIPELINE_DRAFT: ManualPipelineDraft = {
     agenticScopes: { text: false, table: false, figure: false },
     advancedChart: false,
     promptedBlocks: false,
+    spreadsheet: { configured: false, clustering: "accurate", maxCellCount: "" },
     batch: false,
     pageSelection: pageSelection("parse"),
   },
@@ -129,6 +141,7 @@ export const DEFAULT_MANUAL_PIPELINE_DRAFT: ManualPipelineDraft = {
       maximumChartCount: "0",
       inputKind: "document",
     },
+    spreadsheet: { configured: false, clustering: "accurate", maxCellCount: "" },
   },
   split: {
     mode: "off",
@@ -142,6 +155,7 @@ export const DEFAULT_MANUAL_PIPELINE_DRAFT: ManualPipelineDraft = {
       maximumChartCount: "0",
       inputKind: "document",
     },
+    spreadsheet: { configured: false, clustering: "accurate", maxCellCount: "" },
   },
   edit: { enabled: false, fullyPrefilledPages: "0" },
   assumptions: {
@@ -171,6 +185,35 @@ function percentage(value: string): ParsedNumber {
   const number = Number(trimmed);
   if (!Number.isFinite(number) || number < 0 || number > 100) return { valid: false };
   return { valid: true, value: number };
+}
+
+function validatedSpreadsheet(
+  draft: ManualSpreadsheetDraft,
+  errors: ManualPipelineErrors,
+  field: "parse.spreadsheet" | "extract.spreadsheet" | "split.spreadsheet",
+): PublicSpreadsheetConfiguration | undefined {
+  if (!draft.configured && draft.maxCellCount.trim() === "") return undefined;
+  if (
+    draft.clustering !== "accurate" &&
+    draft.clustering !== "fast" &&
+    draft.clustering !== "disabled"
+  ) {
+    errors[`${field}.clustering`] = "Choose Accurate, Fast, or Disabled clustering.";
+    return undefined;
+  }
+  if (draft.maxCellCount.trim() === "") {
+    return { clustering: draft.clustering };
+  }
+  const maxCellCount = wholeNumber(draft.maxCellCount);
+  if (!maxCellCount.valid) {
+    errors[`${field}.maxCellCount`] =
+      "Use a whole maximum cell count of 0 or greater, or leave it blank.";
+    return undefined;
+  }
+  return {
+    clustering: draft.clustering,
+    max_cell_count: maxCellCount.value,
+  };
 }
 
 function firstError(errors: ManualPipelineErrors, field: string, message: string) {
@@ -234,6 +277,19 @@ function sanitizedUnpricedFactors(factors: string[]) {
         .slice(0, 20),
     ),
   ];
+}
+
+function isComputedSpreadsheetFactor(factor: string) {
+  return (
+    factor === "spreadsheet.non_empty_cell_count" ||
+    factor === "spreadsheet.base_processing" ||
+    factor === "spreadsheet.classify" ||
+    factor === "spreadsheet.split" ||
+    factor === "spreadsheet.edit" ||
+    /^spreadsheet\.(?:parse|extract|split)\.(?:return_ocr_data|prompted_processing|advanced_chart)$/.test(
+      factor,
+    )
+  );
 }
 
 function emptyConfigurations(): ReductoImportedConfigurations {
@@ -387,6 +443,20 @@ function writePageRange(
   else settings.page_range = cloneJsonValue(range as ReductoJsonValue);
 }
 
+function writeSpreadsheetConfiguration(
+  owner: ReductoJsonObject,
+  draft: ManualSpreadsheetDraft,
+) {
+  if (!draft.configured && draft.maxCellCount.trim() === "") {
+    delete owner.spreadsheet;
+    return;
+  }
+  const spreadsheet = objectChild(owner, "spreadsheet");
+  spreadsheet.clustering = draft.clustering;
+  if (draft.maxCellCount.trim() === "") delete spreadsheet.max_cell_count;
+  else spreadsheet.max_cell_count = Number(draft.maxCellCount);
+}
+
 function agenticDraftDiffersFromImported(draft: ManualPipelineDraft) {
   const imported = rawAgentic(draft.importedConfigurations);
   const importedScopes = {
@@ -462,6 +532,7 @@ export function manualDraftToReductoConfigurations(
         writePageRange(settings, ranges?.parse);
         removeEmptyChild(parse, "settings");
         parse.queue_priority = draft.parse.batch ? "batch" : "auto";
+        writeSpreadsheetConfiguration(parse, draft.parse.spreadsheet);
       }
       configs.parse = parse;
     } else {
@@ -499,6 +570,7 @@ export function manualDraftToReductoConfigurations(
     const parsingSettings = objectChild(parsing, "settings");
     writePageRange(parsingSettings, ranges?.extract);
     writeEndpointParsingAddOns(extract, draft.extract.parsingAddOns);
+    writeSpreadsheetConfiguration(parsing, draft.extract.spreadsheet);
     removeEmptyChild(parsing, "settings");
     removeEmptyChild(extract, "parsing");
     configs.extract = extract;
@@ -513,6 +585,7 @@ export function manualDraftToReductoConfigurations(
     const parsingSettings = objectChild(parsing, "settings");
     writePageRange(parsingSettings, ranges?.split);
     writeEndpointParsingAddOns(split, draft.split.parsingAddOns);
+    writeSpreadsheetConfiguration(parsing, draft.split.spreadsheet);
     removeEmptyChild(parsing, "settings");
     removeEmptyChild(split, "parsing");
     configs.split = split;
@@ -580,6 +653,15 @@ export function manualDraftToPipeline(
     : undefined;
   const splitPageRange = hasSplit
     ? validatedPageRange(draft.split.pageSelection, errors, "split.pageSelection")
+    : undefined;
+  const parseSpreadsheet = standaloneParse
+    ? validatedSpreadsheet(draft.parse.spreadsheet, errors, "parse.spreadsheet")
+    : undefined;
+  const extractSpreadsheet = hasExtract
+    ? validatedSpreadsheet(draft.extract.spreadsheet, errors, "extract.spreadsheet")
+    : undefined;
+  const splitSpreadsheet = hasSplit
+    ? validatedSpreadsheet(draft.split.spreadsheet, errors, "split.spreadsheet")
     : undefined;
 
   let classifyStart = 1;
@@ -721,6 +803,7 @@ export function manualDraftToPipeline(
     endpoint: "extract" | "split",
     addOns: ManualParsingAddOnDraft,
     range: PublicPageRange | undefined,
+    spreadsheet: PublicSpreadsheetConfiguration | undefined,
   ) => {
     const imported = draft.importedConfigurations?.[endpoint];
     const rawParsing = imported && isJsonObject(imported.parsing) ? imported.parsing : undefined;
@@ -752,6 +835,7 @@ export function manualDraftToPipeline(
             },
           }
         : {}),
+      ...(spreadsheet ? { spreadsheet } : {}),
     };
     return Object.keys(result).length > 0 ? result : undefined;
   };
@@ -766,6 +850,7 @@ export function manualDraftToPipeline(
             : {}),
           ...(parsePageRange ? { page_range: parsePageRange } : {}),
         },
+        ...(parseSpreadsheet ? { spreadsheet: parseSpreadsheet } : {}),
         ...(standaloneParse && draft.parse.batch ? { queue_priority: "batch" as const } : {}),
       }
     : bundledParse
@@ -780,12 +865,18 @@ export function manualDraftToPipeline(
           include_images: draft.extract.includeImages,
           ...(extractPageRange ? { page_range: extractPageRange } : {}),
         },
-        ...(endpointParsing("extract", draft.extract.parsingAddOns, undefined)
+        ...(endpointParsing(
+          "extract",
+          draft.extract.parsingAddOns,
+          undefined,
+          extractSpreadsheet,
+        )
           ? {
               parsing: endpointParsing(
                 "extract",
                 draft.extract.parsingAddOns,
                 undefined,
+                extractSpreadsheet,
               ),
             }
           : {}),
@@ -795,12 +886,18 @@ export function manualDraftToPipeline(
   const split: PublicPipeline["split"] = hasSplit
     ? {
         settings: { deep_split: draft.split.mode === "deep" },
-        ...(endpointParsing("split", draft.split.parsingAddOns, splitPageRange)
+        ...(endpointParsing(
+          "split",
+          draft.split.parsingAddOns,
+          splitPageRange,
+          splitSpreadsheet,
+        )
           ? {
               parsing: endpointParsing(
                 "split",
                 draft.split.parsingAddOns,
                 splitPageRange,
+                splitSpreadsheet,
               ),
             }
           : {}),
@@ -818,7 +915,8 @@ export function manualDraftToPipeline(
       factor !== "split.advanced_chart_count" &&
       factor !== "parse.r1_agentic_prompt" &&
       factor !== "parse.r1_return_ocr_data" &&
-      factor !== "parse.r1_advanced_chart",
+      factor !== "parse.r1_advanced_chart" &&
+      !isComputedSpreadsheetFactor(factor),
   );
   const promptedEndpointAssumptions = {
     ...(standaloneParse && draft.parse.promptedBlocks ? { parse: true } : {}),
@@ -981,6 +1079,38 @@ function rawParseSettings(configurations: ReductoImportedConfigurations | undefi
   return candidates.find(isJsonObject);
 }
 
+function rawNestedSpreadsheet(
+  configuration: ReductoJsonObject | null | undefined,
+) {
+  const parsing = configuration?.parsing;
+  if (!isJsonObject(parsing) || !isJsonObject(parsing.spreadsheet)) return undefined;
+  return parsing.spreadsheet;
+}
+
+function spreadsheetDraftFromConfiguration(
+  publicConfiguration: PublicSpreadsheetConfiguration | null | undefined,
+  importedConfiguration: ReductoJsonValue | undefined,
+): ManualSpreadsheetDraft {
+  const imported = isJsonObject(importedConfiguration)
+    ? importedConfiguration
+    : undefined;
+  const rawClustering = publicConfiguration?.clustering ?? imported?.clustering;
+  const clustering: SpreadsheetClustering =
+    rawClustering === "fast" || rawClustering === "disabled"
+      ? rawClustering
+      : "accurate";
+  const rawMaxCellCount =
+    publicConfiguration?.max_cell_count ?? imported?.max_cell_count;
+  return {
+    configured: publicConfiguration != null || imported !== undefined,
+    clustering,
+    maxCellCount:
+      typeof rawMaxCellCount === "number" && Number.isSafeInteger(rawMaxCellCount)
+        ? String(rawMaxCellCount)
+        : "",
+  };
+}
+
 /** Hydrate every simulator-supported pricing input from a canonical pipeline. */
 export function pipelineToManualDraft(
   pipeline: PublicPipeline,
@@ -1010,6 +1140,29 @@ export function pipelineToManualDraft(
     pipeline.extract?.parsing?.settings?.page_range ??
     pipeline.extract?.settings?.page_range;
   const splitPageRange = pipeline.split?.parsing?.settings?.page_range;
+  const importedParseSpreadsheet = importedConfigurations?.parse?.spreadsheet;
+  const importedExtractSpreadsheet = rawNestedSpreadsheet(
+    importedConfigurations?.extract,
+  );
+  const importedSplitSpreadsheet = rawNestedSpreadsheet(
+    importedConfigurations?.split,
+  );
+  const parseSpreadsheet = spreadsheetDraftFromConfiguration(
+    pipeline.parse?.spreadsheet,
+    importedParseSpreadsheet,
+  );
+  const extractSpreadsheet = spreadsheetDraftFromConfiguration(
+    pipeline.extract?.parsing?.spreadsheet ??
+      (includedDownstream ? pipeline.parse?.spreadsheet : undefined),
+    importedExtractSpreadsheet ??
+      (includedDownstream ? importedParseSpreadsheet : undefined),
+  );
+  const splitSpreadsheet = spreadsheetDraftFromConfiguration(
+    pipeline.split?.parsing?.spreadsheet ??
+      (includedDownstream && !extractEnabled ? pipeline.parse?.spreadsheet : undefined),
+    importedSplitSpreadsheet ??
+      (includedDownstream && !extractEnabled ? importedParseSpreadsheet : undefined),
+  );
   const publicAgentic = pipeline.parse?.enhance?.agentic ?? [];
   const importedAgentic = rawAgentic(importedConfigurations);
   const agentic = importedAgentic.length > 0 ? importedAgentic : publicAgentic;
@@ -1105,6 +1258,7 @@ export function pipelineToManualDraft(
         promptedEndpoints.parse === true ||
         agentic.some((entry) => typeof entry.prompt === "string"),
       batch: pipeline.parse?.queue_priority === "batch",
+      spreadsheet: parseSpreadsheet,
       pageSelection: pageSelectionFromPublic(
         parseEnabled && !extractEnabled && !splitEnabled ? parsePageRange : undefined,
         "parse",
@@ -1132,6 +1286,7 @@ export function pipelineToManualDraft(
         "extract",
       ),
       parsingAddOns: endpointAddOnDraft("extract", pipeline.extract?.parsing),
+      spreadsheet: extractSpreadsheet,
     },
     split: {
       mode: splitMode,
@@ -1140,6 +1295,7 @@ export function pipelineToManualDraft(
         "split",
       ),
       parsingAddOns: endpointAddOnDraft("split", pipeline.split?.parsing),
+      spreadsheet: splitSpreadsheet,
     },
     edit: {
       enabled: pipeline.edit != null,

@@ -229,10 +229,66 @@ test("imports the supplied standalone Parse configuration without treating its s
   assert.deepEqual(result.pipeline.parse, {
     enhance: { agentic: [] },
     settings: { model: "legacy", return_ocr_data: false },
+    spreadsheet: { clustering: "accurate" },
   });
   assert.equal(result.pipeline.lumos_assumptions.likely_complex_parse_share, 0.5);
-  assert.match(result.warnings.join(" "), /spreadsheet settings group/i);
+  assert.match(result.warnings.join(" "), /Spreadsheet settings were imported/i);
   assert.match(result.warnings.join(" "), /No Parse model was specified.*Legacy/i);
+});
+
+test("imports spreadsheet clustering and safety limits while preserving cost-neutral fields", () => {
+  const result = importReductoCode(`{
+    "spreadsheet": {
+      "clustering": "fast",
+      "max_cell_count": 250000,
+      "include": ["formula"],
+      "exclude": ["hidden_sheets"]
+    }
+  }`);
+
+  assert.equal(result.applicable, true);
+  assert.deepEqual(result.pipeline.parse.spreadsheet, {
+    clustering: "fast",
+    max_cell_count: 250000,
+  });
+  assert.deepEqual(result.configurations.parse.spreadsheet.include, ["formula"]);
+  assert.deepEqual(result.configurations.parse.spreadsheet.exclude, ["hidden_sheets"]);
+  assert.equal(result.detected.spreadsheet, false);
+});
+
+test("hydrates nested Extract spreadsheet settings and defaults omitted clustering to Accurate", () => {
+  const configured = importReductoCode(`{
+    "instructions": {"schema": {"type": "object", "properties": {"name": {"type": "string"}}}},
+    "settings": {"deep_extract": false},
+    "parsing": {"spreadsheet": {"clustering": "disabled", "max_cell_count": 0}}
+  }`);
+  assert.equal(configured.applicable, true);
+  assert.deepEqual(configured.pipeline.extract.parsing.spreadsheet, {
+    clustering: "disabled",
+    max_cell_count: 0,
+  });
+
+  const defaulted = importReductoCode(`{
+    "instructions": {"schema": {"type": "object", "properties": {"name": {"type": "string"}}}},
+    "parsing": {"spreadsheet": {"include": ["cell_colors"]}}
+  }`);
+  assert.equal(defaulted.applicable, true);
+  assert.deepEqual(defaulted.pipeline.extract.parsing.spreadsheet, {
+    clustering: "accurate",
+  });
+});
+
+test("rejects invalid spreadsheet clustering and max_cell_count imports", () => {
+  for (const spreadsheet of [
+    { clustering: "turbo" },
+    { max_cell_count: -1 },
+    { max_cell_count: 1.5 },
+    { max_cell_count: Number.MAX_SAFE_INTEGER + 1 },
+  ]) {
+    const result = importReductoCode(JSON.stringify({ spreadsheet }));
+    assert.equal(result.applicable, false);
+    assert.match(result.error, /clustering|max_cell_count/i);
+  }
 });
 
 test("preserves standalone Parse agentic modes and every normalized page range", () => {
@@ -263,6 +319,7 @@ test("preserves standalone Parse agentic modes and every normalized page range",
         { start: 12, end: 12 },
       ],
     },
+    spreadsheet: { clustering: "accurate", max_cell_count: 50 },
   });
   assert.equal(result.pipeline.lumos_assumptions.likely_complex_parse_share, 0.5);
   assert.match(result.warnings.join(" "), /No Parse model was specified.*Legacy/i);
@@ -407,6 +464,10 @@ test("combines adjacent Parse and Extract JSON objects into one Lumos pipeline",
   assert.deepEqual(result.detected.operations, ["parse", "extract"]);
   assert.deepEqual(result.detected.extractPageRanges, [{ start: 1, end: 5 }]);
   assert.deepEqual(result.pipeline.extract.settings.page_range, { start: 1, end: 5 });
+  assert.deepEqual(result.pipeline.extract.parsing.spreadsheet, {
+    clustering: "accurate",
+    max_cell_count: 50,
+  });
   assert.equal(result.pipeline.extract.settings.deep_extract, true);
   assert.deepEqual(result.pipeline.lumos_assumptions.unpriced_cost_factors, [
     "extract.include_images",
@@ -599,6 +660,7 @@ test("imports all-page and ranged nested Split parsing", () => {
       ],
     },
     settings: { page_range: { start: 1, end: 5 }, return_ocr_data: true },
+    spreadsheet: { clustering: "accurate", max_cell_count: 50 },
   });
   assert.match(ranged.warnings.join(" "), /Parse page range.*downstream Split/i);
 });
@@ -729,7 +791,9 @@ test("keeps endpoint-local nested parsing in independent configuration snapshots
 
   assert.equal(result.pipeline.extract.settings.deep_extract, true);
   assert.deepEqual(result.pipeline.extract.settings.page_range, { start: 1, end: 5 });
-  assert.equal(result.pipeline.split.parsing, undefined);
+  assert.deepEqual(result.pipeline.split.parsing, {
+    spreadsheet: { clustering: "accurate" },
+  });
 });
 
 test("does not expose partially accepted configurations when import fails", () => {
@@ -767,6 +831,7 @@ test("prices Parse as standalone when Classify is the only other operation", () 
   assert.deepEqual(result.pipeline.parse, {
     enhance: { agentic: [] },
     settings: { model: "legacy", return_ocr_data: false },
+    spreadsheet: { clustering: "accurate" },
   });
   assert.deepEqual(result.pipeline.classify, {
     page_range: { start: 1, end: 3 },

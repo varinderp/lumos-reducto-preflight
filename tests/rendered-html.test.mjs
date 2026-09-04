@@ -59,6 +59,7 @@ const RATE_CARD_DEFAULTS = {
   deepSplit: "40",
   edit: "60",
   editPrefilled: "15",
+  spreadsheetCredit: "0.01",
 };
 
 test("release package versions stay aligned", async () => {
@@ -67,7 +68,7 @@ test("release package versions stay aligned", async () => {
     await readFile(new URL("../package-lock.json", import.meta.url), "utf8"),
   );
 
-  assert.equal(packageJson.version, "0.1.34");
+  assert.equal(packageJson.version, "0.1.35");
   assert.equal(packageLock.version, packageJson.version);
   assert.equal(packageLock.packages[""].version, packageJson.version);
 });
@@ -223,6 +224,7 @@ test("server-renders the Lumos simulator and API", async () => {
     "Deep Split",
     "Edit",
     "Fully prefilled Edit",
+    "Spreadsheet credit \\(Lumos default\\)",
   ]) {
     assert.match(html, new RegExp(`>${label}<`));
   }
@@ -230,7 +232,7 @@ test("server-renders the Lumos simulator and API", async () => {
   assert.match(html, /Latency priority[\s\S]*?2[\s\S]*?×/);
   assert.match(html, /Batch Parse[\s\S]*?20[\s\S]*?% discount/);
   assert.match(html, /aria-label="Close rate card"/);
-  assert.match(html, />Reset to public rates<\/button>/);
+  assert.match(html, />Reset to default rates<\/button>/);
   assert.match(html, />\s*Cancel\s*<\/button>/);
   assert.match(html, />Apply rates<\/button>/);
   assert.match(html, /<h3>2\. Pipeline configuration<\/h3>/);
@@ -255,7 +257,7 @@ test("server-renders the Lumos simulator and API", async () => {
   assert.match(html, /<th>Request field<\/th>[\s\S]*?<th>Use<\/th>/);
   assert.match(
     html,
-    /<code>documents<\/code>[\s\S]*?Required\. An array of document <strong>metadata<\/strong> \(<code>name<\/code>, <code>pages<\/code>\)\.\s*Do not send file contents\.[\s\S]*?<\/tr>/i,
+    /<code>documents<\/code>[\s\S]*?Required document <strong>metadata<\/strong>\. Send <code>name<\/code> and <code>pages<\/code> for ordinary documents\. For spreadsheets, send <code>name<\/code> and optional <code>estimated_non_empty_cells<\/code>\. Do not send file contents\.[\s\S]*?<\/tr>/i,
   );
   assert.match(
     html,
@@ -272,6 +274,8 @@ test("server-renders the Lumos simulator and API", async () => {
   assert.doesNotMatch(html, /Required\. Original filenames and page counts\./);
   assert.doesNotMatch(html, /Required\. The copied Lumos profile, stored by your application\./);
   assert.match(html, /const documents = \[[\s\S]*?name: &quot;agreement\.pdf&quot;,[\s\S]*?pages: 42/);
+  assert.match(html, /name: &quot;model\.xlsx&quot;,[\s\S]*?estimated_non_empty_cells: 125000/);
+  assert.match(html, /Spreadsheet API estimates use Lumos(?:&#x27;|&apos;)s \$0\.01-per-credit default/);
   assert.match(html, /const pipeline = await loadSavedLumosProfile\(\)/);
   assert.doesNotMatch(html, /Lumos receives metadata, not files/i);
   assert.match(html, /estimate[\s\S]*?breakdown[\s\S]*?usage[\s\S]*?<code>allow<\/code>[\s\S]*?<code>review<\/code>[\s\S]*?<code>deny<\/code>/i);
@@ -289,12 +293,14 @@ test("server-renders the Lumos simulator and API", async () => {
   assert.ok(renderedReleaseHistory);
   assert.match(
     renderedReleaseHistory,
-    /<summary aria-label="Lumos version 0\.1\.34; show release history">v0\.1\.34<\/summary>/,
+    /<summary aria-label="Lumos version 0\.1\.35; show release history">v0\.1\.35<\/summary>/,
   );
-  const renderedCurrentRelease = renderedReleaseHistory.indexOf("Added parsing add-on pricing.");
-  const renderedPreviousRelease = renderedReleaseHistory.indexOf("Added r‑1 Beta pricing.");
+  const renderedCurrentRelease = renderedReleaseHistory.indexOf("Added spreadsheet cell pricing.");
+  const renderedPreviousRelease = renderedReleaseHistory.indexOf("Added parsing add-on pricing.");
+  const renderedOlderRelease = renderedReleaseHistory.indexOf("Added r‑1 Beta pricing.");
   assert.ok(renderedCurrentRelease >= 0);
   assert.ok(renderedPreviousRelease > renderedCurrentRelease);
+  assert.ok(renderedOlderRelease > renderedPreviousRelease);
   assert.match(
     html,
     /Please send feedback at[\s\S]*?<a href="mailto:varinderpsaini@gmail\.com">varinderpsaini@gmail\.com<\/a>/,
@@ -321,9 +327,14 @@ test("paid verification preserves legacy usage and the newer usage breakdown", a
   assert.match(source, /step_usage_breakdown/);
   assert.match(source, /\(value as JsonObject\)\.usage_breakdown \?\? null/);
   assert.doesNotMatch(source, /usage_breakdown[^\n]*\.usage\b/);
+  assert.match(source, /files\.some\(\(file\) => isSpreadsheetFilename\(file\.name\)\)/);
+  assert.match(
+    source,
+    /Spreadsheet verification is unavailable because Lumos does not upload workbook contents\./,
+  );
 });
 
-test("pricing exports the thirteen public unit rates and keeps fixed rules separate", async () => {
+test("pricing exports the fourteen public unit rates and keeps fixed rules separate", async () => {
   const {
     DEFAULT_PRICING_UNIT_RATES,
     FIXED_PRICING_RULES,
@@ -347,8 +358,9 @@ test("pricing exports the thirteen public unit rates and keeps fixed rules separ
     deepSplit: 0.04,
     edit: 0.06,
     editPrefilled: 0.015,
+    spreadsheetCredit: 0.01,
   });
-  assert.equal(Object.keys(DEFAULT_PRICING_UNIT_RATES).length, 13);
+  assert.equal(Object.keys(DEFAULT_PRICING_UNIT_RATES).length, 14);
   assert.equal(Object.isFrozen(DEFAULT_PRICING_UNIT_RATES), true);
   assert.equal(RATE_CARD, "reducto-public-2026-09-01");
   assert.equal(R1_RATE_CARD, "reducto-public-2026-09-01-r1-beta");
@@ -436,6 +448,7 @@ test("custom simulator rates affect every editable pricing product", async () =>
     deepSplit: 0.606,
     edit: 0.808,
     editPrefilled: 0.707,
+    spreadsheetCredit: 0.025,
   };
 
   const parseInput = normalizeRequest({
@@ -705,7 +718,7 @@ test("rate-card source preserves drafts, accessibility, used marks, and API isol
   assert.doesNotMatch(apiRequestSource, /appliedRates|rateDraft|pricing_unit_rates|rate_card/);
   assert.match(
     source,
-    /The API preview uses public rates; simulator rate edits are excluded\./,
+    /The API preview uses default rates; simulator rate edits are excluded\./,
   );
   assert.doesNotMatch(source, /localStorage|sessionStorage|document\.cookie/);
 
@@ -765,7 +778,7 @@ test("rate-card source preserves drafts, accessibility, used marks, and API isol
   assert.match(source, /displayValue > 0 && unitRate === 0/);
   assert.match(
     source,
-    /Reset to public rates[\s\S]*?Cancel[\s\S]*?Apply rates/,
+    /Reset to default rates[\s\S]*?Cancel[\s\S]*?Apply rates/,
   );
   assert.match(
     source,
@@ -825,10 +838,12 @@ test("r-1 Beta controls, announcement, preview card, and release note stay expli
     releaseSource,
     /<summary aria-label=\{`Lumos version \$\{packageJson\.version\}; show release history`\}>/,
   );
-  const currentRelease = releaseSource.indexOf("Added parsing add-on pricing.");
-  const previousRelease = releaseSource.indexOf("Added r‑1 Beta pricing.");
+  const currentRelease = releaseSource.indexOf("Added spreadsheet cell pricing.");
+  const previousRelease = releaseSource.indexOf("Added parsing add-on pricing.");
+  const olderRelease = releaseSource.indexOf("Added r‑1 Beta pricing.");
   assert.ok(currentRelease >= 0);
   assert.ok(previousRelease > currentRelease);
+  assert.ok(olderRelease > previousRelease);
   assert.match(
     source,
     /Please send feedback at \{" "\}\s*<a href="mailto:varinderpsaini@gmail\.com">varinderpsaini@gmail\.com<\/a>/,
@@ -841,7 +856,10 @@ test("browser estimator derives processing mode from an applied pipeline", async
   const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const compactSource = source.replace(/\s+/g, " ");
   assert.match(source, /estimate:\s*estimatePipeline\(normalized, appliedRates\)/);
-  assert.match(source, /pipeline\.classify != null \? `Classify/);
+  assert.match(
+    source,
+    /pipeline\.classify != null && estimate\.classifyPages > 0\s*\? `Classify/,
+  );
   assert.match(source, /<th>Mode<\/th>/);
   assert.match(source, /simulatorModeLabel\(pipeline\)/);
   assert.doesNotMatch(source, /assumedExtractRoute|assumed_extract_route/);
@@ -876,6 +894,21 @@ test("browser estimator derives processing mode from an applied pipeline", async
   assert.match(source, /tabIndex=\{manualEndpointTab === endpoint \? 0 : -1\}/);
   assert.match(source, /className="endpoint-panel-scroll"/);
   assert.match(source, /<footer className="configurator-footer">/);
+  assert.match(
+    source,
+    /accept="\.pdf,[^"]*\.xls,\.xlsx,\.xlsm,\.xltx,\.xltm,\.csv,\.qpw"/,
+  );
+  assert.match(source, /Pages \/ estimated non-empty cells/);
+  assert.match(source, /Estimated non-empty cells in \$\{document\.name\}/);
+  assert.match(source, /Enter expected non-empty cells after exclusions or filtering/);
+  assert.match(source, /function SpreadsheetSettings\(/);
+  assert.match(source, /<legend>Spreadsheet<\/legend>/);
+  assert.match(source, /Accurate \(default\)[\s\S]*?Fast[\s\S]*?Disabled/);
+  assert.match(source, /Maximum non-empty cells/);
+  assert.match(source, /safety limit, not the estimate/);
+  assert.match(source, /aria-describedby=\{invalidCells \? cellErrorId : undefined\}/);
+  assert.match(source, /spreadsheet-clustering-error/);
+  assert.match(source, /spreadsheet-max-error/);
   assert.doesNotMatch(source, /<h5>Reducto settings<\/h5>|<h5>Lumos assumptions<\/h5>/);
   assert.match(source, /<h5>Additional inputs<\/h5>/);
   assert.doesNotMatch(source, /builder-step-[1-6]|pipeline-builder-step/);
@@ -897,9 +930,10 @@ test("browser estimator derives processing mode from an applied pipeline", async
     source,
     /function applyImportedPipeline\(\)[\s\S]*?estimatePipeline\(normalized, appliedRates\)[\s\S]*?setPipeline\(codeImport\.pipeline\)/,
   );
+  assert.doesNotMatch(source, /validatedUnpricedCostFactors/);
   assert.match(
     source,
-    /validatedUnpricedCostFactors = estimatePipeline\([\s\S]*?\)\.unpricedCostFactors[\s\S]*?setManualDraft\(\(current\) => \(\{[\s\S]*?assumptions:[\s\S]*?unpricedCostFactors: \[\.\.\.validatedUnpricedCostFactors\]/,
+    /const preservedUnpricedCostFactors =[\s\S]*?result\.pipeline\.lumos_assumptions\?\.unpriced_cost_factors \?\? \[\]/,
   );
   assert.match(source, /role="alert"[\s\S]*?Review the highlighted setup fields/);
   assert.match(
@@ -932,7 +966,7 @@ test("browser estimator derives processing mode from an applied pipeline", async
   );
   const pageEditorSource = source.slice(
     source.indexOf("function PageSelectionEditor("),
-    source.indexOf("function makeDemoDocuments()"),
+    source.indexOf("function makeExampleDocuments()"),
   );
   const pageModeSource = pageEditorSource.slice(
     pageEditorSource.indexOf('className="choice-row"'),
@@ -985,6 +1019,14 @@ test("browser estimator derives processing mode from an applied pipeline", async
   assert.match(source, /Fully prefilled pages/);
   assert.match(source, /Return OCR data/);
   assert.match(source, /Prompted blocks or custom regions/);
+  assert.match(source, /Spreadsheet credit \(Lumos default\)/);
+  assert.match(source, /unit: "\/ credit"/);
+  assert.match(source, /Spreadsheet estimates assume \{rateMoney\(appliedRates\.spreadsheetCredit\)\} per/);
+  assert.match(
+    source,
+    /Chart counts apply to non-spreadsheet documents\. Spreadsheet chart[\s\S]*?costs remain excluded\./,
+  );
+  assert.match(source, /Spreadsheet files are not uploaded or verified here\./);
   assert.match(source, /Input reuses an existing Parse result \(<code>jobid:\/\/<\/code>\)/);
   assert.match(source, /aria-label=\{`Remove \$\{legend\} \$\{index \+ 1\}`\}/);
   assert.match(source, /aria-label=\{`Add another \$\{legend\}`\}/);
@@ -999,7 +1041,7 @@ test("browser estimator derives processing mode from an applied pipeline", async
   assert.doesNotMatch(source, /Lumos receives metadata, not files/);
   assert.match(
     apiSectionSource,
-    /Required\. An array of document <strong>metadata<\/strong> \(<code>name<\/code>, <code>pages<\/code>\)\.\s*Do not send file contents\./i,
+    /Required document <strong>metadata<\/strong>\. Send <code>name<\/code> and <code>pages<\/code> for ordinary documents\. For spreadsheets, send <code>name<\/code> and optional <code>estimated_non_empty_cells<\/code>\. Do not send file contents\./i,
   );
   assert.match(
     apiSectionSource,
@@ -1128,7 +1170,7 @@ test("simulator gates estimates on an applied pipeline and clear restores unconf
   );
   assert.match(
     source,
-    /if \(!documents\.length \|\| hasSpreadsheet \|\| pipelineDraftState !== "applied"\)/,
+    /!documents\.length \|\|[\s\S]*?!requestDocumentsResult\.documents \|\|[\s\S]*?pipelineDraftState !== "applied"/,
   );
   assert.match(source, /pipelineDraftState !== "applied"[\s\S]*?Apply the pipeline/);
   assert.match(source, /pipelineDraftState === "dirty"/);
@@ -1351,7 +1393,7 @@ test("simulator cleanup keeps the policy, profile, and API preview states explic
   assert.doesNotMatch(apiSource, /Current applied request|Current response/);
   assert.ok(
     compactSource.includes(
-      "The API preview uses public rates; simulator rate edits are excluded.",
+      "The API preview uses default rates; simulator rate edits are excluded.",
     ),
   );
 });
@@ -2375,9 +2417,9 @@ test("estimate API rejects contradictory Parse and Extract pricing inputs", asyn
   }
 });
 
-test("estimate API refuses to invent page pricing for spreadsheet names and URLs", async () => {
+test("estimate API requires cell metadata instead of page metadata for spreadsheets", async () => {
   for (const name of ["model.xlsx", "MODEL.XLSX?download=1", "table.csv#sheet-2"]) {
-    const response = await request("/api/estimate", {
+    const invalid = await request("/api/estimate", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2385,8 +2427,21 @@ test("estimate API refuses to invent page pricing for spreadsheet names and URLs
         pipeline: { extract: { settings: { deep_extract: false } } },
       }),
     });
-    assert.equal(response.status, 400);
-    assert.match((await response.json()).error, /billable cell counts.*rate card/i);
+    assert.equal(invalid.status, 400);
+    assert.match((await invalid.json()).error, /unsupported field: pages/i);
+
+    const valid = await request("/api/estimate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        documents: [{ name, estimated_non_empty_cells: 100000 }],
+        pipeline: { extract: { settings: { deep_extract: false } } },
+      }),
+    });
+    assert.equal(valid.status, 200);
+    const payload = await valid.json();
+    assert.equal(payload.estimate.likely_usd, 1);
+    assert.equal(payload.breakdown.spreadsheet_usd, 1);
   }
 });
 

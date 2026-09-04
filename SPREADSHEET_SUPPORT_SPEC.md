@@ -1,247 +1,196 @@
 # Lumos Spreadsheet Support Specification
 
-Status: Deferred
-Pricing source: Customer-provided Reducto rate card only
+Status: implemented in v0.1.35
+Pricing sources: [Reducto usage and pricing](https://docs.reducto.ai/reference/credit-usage) and [spreadsheet configuration](https://docs.reducto.ai/configs/parse/spreadsheet)
 
 ## 1. Purpose
 
-Lumos may inspect spreadsheet files before Reducto processing and estimate their
-usage without uploading them. Spreadsheet dollar estimates remain unavailable
-until the developer supplies the applicable customer rate card.
+Lumos estimates spreadsheet usage from a user- or application-supplied count of
+expected non-empty cells. It does not open, parse, inspect, or upload workbook
+contents during estimation, and it never treats spreadsheet files as ordinary
+pages.
 
-Reducto measures spreadsheet usage by cells rather than ordinary document pages.
-Its public pricing documentation does not publish a current spreadsheet dollar
-rate and instructs customers to consult their rate card.
+Reducto documents spreadsheet usage in credits rather than a universal dollar
+price. Lumos therefore uses `$0.01 / credit` as an explicit Lumos default and
+advises customers to consult their Reducto rate card.
 
-## 2. Official Reducto behavior
+## 2. Request metadata
 
-Supported spreadsheet formats include XLSX, XLSM, XLS, XLTX, XLTM, CSV, and QPW.
-
-The Reducto configuration field is:
+The `documents` array accepts two mutually exclusive shapes:
 
 ```json
 {
-  "spreadsheet": {
-    "clustering": "accurate"
-  }
+  "name": "contract.pdf",
+  "pages": 18
 }
 ```
 
-Supported clustering values:
-
-| Value | Reducto behavior |
-| --- | --- |
-| `accurate` | Default; model-assisted table-boundary detection for complex layouts |
-| `fast` | Rule-based table detection using empty rows and columns |
-| `disabled` | Treats each sheet as one table |
-
-Reducto documents Accurate clustering as costing five times as much per cell as
-Fast. The pricing page lists historical usage ratios but does not provide a
-current public dollar rate. Lumos must therefore use the customer's actual rate
-card.
-
-After processing, Reducto may return the `billable_spreadsheet_pages` billing
-tag, which represents spreadsheet billing derived from cell count. Lumos must
-not fabricate this response tag during preflight estimation.
-
-## 3. Local inspection
-
-Spreadsheet inspection must occur entirely in browser memory. Lumos must not
-upload the workbook to Reducto or a Lumos server during ordinary estimation.
-
-For each workbook, Lumos may derive:
-
-- File format and workbook size
-- Sheet count and sheet visibility
-- Non-empty cells per sheet
-- Used-range rows, columns, and cells
-- Formula-cell count
-- Merged-range count
-- Selected clustering mode
-- Sheets excluded by the supplied Reducto configuration
-- Inspection warnings and confidence
-
-Lumos should retain both non-empty-cell and used-range counts because Reducto's
-public documentation does not precisely define which local workbook cells will
-become billable cells.
-
-Files and derived measurements must be discarded when the estimate is cleared
-or the browser session ends.
-
-## 4. Usage range
-
-Lumos must describe its values as locally observed cell estimates, not Reducto
-billing facts.
-
-Proposed fields:
-
 ```json
 {
-  "cell_estimate": {
-    "low": 12500,
-    "likely": 14800,
-    "high": 17600,
-    "basis": "local_workbook_inspection",
-    "confidence": "medium"
-  }
+  "name": "model.xlsx",
+  "estimated_non_empty_cells": 100000
 }
 ```
 
-Suggested interpretation:
+`estimated_non_empty_cells` is optional. A missing count is valid, but the
+spreadsheet contribution is excluded and the estimate is marked incomplete. A
+zero count contributes zero credits and does not by itself make the estimate
+incomplete. Supplied counts must be finite, safe, nonnegative whole numbers.
 
-- `low`: cells clearly containing locally observable values or formulas
-- `likely`: Lumos's best locally derived processed-cell estimate
-- `high`: bounded workbook used-range cells that could reasonably be processed
+Spreadsheet identity comes only from the original filename. Lumos recognizes
+XLS, XLSX, XLSM, XLTX, XLTM, CSV, and QPW case-insensitively, including URLs
+whose path ends in one of those extensions. A `spreadsheet` settings object by
+itself does not classify a file as a spreadsheet.
 
-If a reliable bound cannot be produced, the affected value must be `null`.
-Lumos must explain which workbook features caused the uncertainty.
+## 3. Configuration
 
-These bounds are Lumos estimation conventions, not documented Reducto billing
-formulas.
-
-## 5. Customer rate card
-
-A dollar estimate requires an explicit rate for the selected clustering mode
-and all applicable rounding, minimum, or downstream product rules.
-
-Example Lumos-only input:
+Standalone Parse uses Reducto's top-level spreadsheet group:
 
 ```json
 {
-  "customer_rate_card": {
-    "id": "customer-reducto-2026",
-    "currency": "USD",
+  "parse": {
     "spreadsheet": {
-      "accurate": {
-        "unit_size_cells": 1000,
-        "price_per_unit": 0.00
-      },
-      "fast": {
-        "unit_size_cells": 1000,
-        "price_per_unit": 0.00
-      },
-      "disabled": {
-        "unit_size_cells": 1000,
-        "price_per_unit": 0.00
+      "clustering": "accurate",
+      "max_cell_count": 200000
+    }
+  }
+}
+```
+
+Extract and Split retain the same group under their nested Parse settings:
+
+```json
+{
+  "extract": {
+    "parsing": {
+      "spreadsheet": {
+        "clustering": "fast",
+        "max_cell_count": 200000
       }
     }
   }
 }
 ```
 
-The actual schema must also support any rate-card rounding, minimum charge,
-effective date, and applicable Extract or Deep Extract charges. Lumos must not
-assume that historical credit ratios define the customer's current dollar rate.
+`clustering` accepts `accurate`, `fast`, or `disabled` and defaults to
+`accurate` when omitted. `max_cell_count` is an optional Reducto safety limit;
+it is never used as an estimated count. If a supplied estimate exceeds an
+applicable limit, Lumos rejects the request because Reducto would reject the
+workbook before processing.
 
-## 6. Estimate statuses
+Imported cost-neutral spreadsheet fields such as `include`, `exclude`, and
+`split_large_tables` remain available for review and reapplication, but they do
+not change Lumos's current calculation.
 
-### `rate_card_required`
+## 4. Calculation
 
-Use when local cells can be inspected but no applicable customer rate exists.
+Lumos prorates partial credits without rounding:
 
-```json
-{
-  "status": "rate_card_required",
-  "estimate_usd": null,
-  "decision": "review"
-}
+| Clustering | Usage | Lumos default USD calculation |
+| --- | ---: | ---: |
+| Accurate | 1 credit / 1,000 cells | `(cells / 1,000) × $0.01` |
+| Fast | 1 credit / 5,000 cells | `(cells / 5,000) × $0.01` |
+| Disabled | 1 credit / 5,000 cells | `(cells / 5,000) × $0.01` |
+
+Examples:
+
+- 100,000 Accurate cells = 100 credits = `$1.00`.
+- 100,000 Fast or Disabled cells = 20 credits = `$0.20`.
+- 1,500 Accurate cells = 1.5 credits = `$0.015`.
+
+For a Parse or Extract estimate, the spreadsheet cell amount is charged once.
+Spreadsheet rows are excluded from page counts, page ranges, Legacy complexity,
+Agentic and latency multipliers, Batch discounts, conditional or Deep Extract
+rates, Classify pages, Split pages, and Edit pages. Ordinary files in the same
+request retain their existing page calculations.
+
+Spreadsheet contributions from Split, Classify, Edit, OCR data return,
+prompted blocks or custom regions, and Advanced Chart remain unpriced until
+their billing behavior is confirmed. If any of those operations are selected,
+Lumos returns the known subtotal and identifies the excluded factor instead of
+guessing. Chart-count assumptions in a mixed batch apply to the ordinary
+documents; the spreadsheet chart contribution remains excluded.
+
+For Extract with `processing_context.extract_input: "jobid"`, Lumos keeps the
+cell-based Extract base while suppressing nested parsing add-ons already billed
+on the original Parse job. This matches the existing treatment of ordinary
+Extract base pricing. For Split `jobid` reuse, the Parse base is already billed;
+only the unpriced spreadsheet Split contribution remains for review.
+
+## 5. Simulator
+
+- Each spreadsheet row exposes **Estimated non-empty cells** instead of pages.
+- Page totals and spreadsheet cell and credit totals are shown separately.
+- Parse and Extract expose compact spreadsheet clustering and safety-limit
+  settings when spreadsheet input or imported spreadsheet settings are present.
+- The rate card includes **Spreadsheet credit (Lumos default)** at
+  `$0.01 / credit`.
+- A custom spreadsheet credit rate changes simulator calculations only and
+  remains in page state for the current browser session.
+- The generated API preview always uses the Lumos default `$0.01 / credit`.
+- Reset, Cancel, Apply, and Clear session follow the same atomic rate-card
+  behavior as every other simulator rate.
+
+No spreadsheet library or workbook-inspection path is included.
+
+## 6. API response
+
+For requests containing spreadsheet filenames, `POST /api/estimate` adds:
+
+- `breakdown.spreadsheet_usd`;
+- `usage.spreadsheets.documents`;
+- `usage.spreadsheets.estimated_non_empty_cells`;
+- `usage.spreadsheets.documents_missing_cell_count`;
+- `usage.spreadsheets.credits`;
+- `usage.spreadsheets.clustering`;
+- `usage.spreadsheets.max_cell_count`;
+- `usage.spreadsheets.base_endpoint`; and
+- `spreadsheet_rate_basis`, which reports `$0.01 / credit` as a Lumos default
+  and tells the caller to consult its Reducto rate card.
+
+These fields are omitted from responses that contain no spreadsheet input.
+Existing page-pricing rate-card identifiers remain unchanged.
+
+## 7. Completeness and policy
+
+Missing cell counts and unpriced spreadsheet factors set
+`estimate_complete: false`. The known subtotal remains numeric.
+
+```text
+deny   = known low subtotal exceeds the budget
+review = an excluded spreadsheet cost remains, or the budget falls in a range
+allow  = the estimate is complete and its high value is within the budget
 ```
 
-### `needs_input`
+An incomplete spreadsheet estimate can therefore return `deny`, but never
+`allow`.
 
-Use when the workbook cannot be inspected reliably or a required rate-card rule
-is missing.
+## 8. Privacy and non-goals
 
-### `estimated`
+- Lumos receives metadata, not workbook contents, through the estimate API.
+- The simulator keeps selected files and entered counts in browser memory.
+- Lumos does not execute formulas, macros, scripts, or external links.
+- Lumos does not infer non-empty-cell counts from `max_cell_count`.
+- Lumos does not claim that `$0.01 / credit` is every customer's price.
+- Lumos does not price unresolved spreadsheet contributions for Split,
+  Classify, Edit, OCR, prompted processing, or charts.
+- Lumos does not guarantee the final Reducto bill.
 
-Use when local cell bounds and all applicable customer rates are available.
+## 9. Acceptance criteria
 
-```json
-{
-  "status": "estimated",
-  "estimate_usd": {
-    "low": 1.25,
-    "likely": 1.48,
-    "high": 1.76
-  },
-  "has_range": true
-}
-```
-
-A collapsed range remains an estimate until reconciled with Reducto's returned
-usage.
-
-### `unsupported_format`
-
-Use when the browser inspector cannot safely read a Reducto-supported
-spreadsheet format. The file may still be processable by Reducto, but Lumos
-cannot estimate it locally.
-
-## 7. Budget decisions
-
-Lumos may return `allow` only when every spreadsheet charge has a complete rate
-and the estimated high value is within the threshold.
-
-It may return `deny` when the complete estimated low value exceeds the
-threshold.
-
-All incomplete, partially priced, or rate-card-required spreadsheet estimates
-must return `review`.
-
-For a mixed document batch:
-
-- Show the priced non-spreadsheet amount as `known_non_spreadsheet_subtotal_usd`
-- Show spreadsheet usage separately
-- Keep the complete batch total `null`
-- Never label the known subtotal as the total
-- Never return `allow` while spreadsheet charges remain unresolved
-
-## 8. Security requirements
-
-- Inspect files in browser memory only
-- Do not execute macros, formulas, scripts, or external workbook links
-- Do not fetch linked workbook data
-- Apply compressed-size, expanded-size, row, column, sheet, and cell limits
-- Detect encrypted or malformed workbooks
-- Protect against ZIP bombs and parser resource exhaustion
-- Do not store filenames, workbook contents, or cell values in analytics
-- Clear files and derived measurements with the browser session
-
-## 9. Explicit non-goals
-
-The first spreadsheet release will not:
-
-- Invent a public spreadsheet dollar rate
-- Convert legacy credits into current dollars
-- Claim to reproduce Reducto's exact billable-cell calculation
-- Execute formulas or macros
-- Reproduce Reducto's Accurate clustering model locally
-- Upload sample sheets to Reducto during ordinary estimation
-- Generate `billable_spreadsheet_pages` before Reducto returns it
-- Estimate downstream LLM, token, storage, or infrastructure costs
-- Guarantee the final Reducto bill
-- Automatically approve a job containing unresolved spreadsheet charges
-
-## 10. Acceptance criteria
-
-1. Spreadsheet uploads are never priced as ordinary pages.
-2. The configuration accepts only `accurate`, `fast`, or `disabled`.
-3. Missing customer pricing returns `rate_card_required`, null USD totals, and
-   `review`.
-4. Locally derived cell values are labeled as estimates.
-5. Mixed batches never hide unresolved spreadsheet charges inside a partial
-   total.
-6. Customer rates are applied only to their declared clustering mode and
-   effective period.
-7. Encrypted, malformed, or locally unsupported workbooks do not receive
-   guessed estimates.
-8. No spreadsheet content leaves browser memory during ordinary estimation.
-9. Actual Reducto usage can later be reconciled without treating Lumos's local
-   counts as returned billing facts.
-
-## 11. Official sources
-
-- [Reducto usage and pricing](https://docs.reducto.ai/reference/credit-usage)
-- [Spreadsheet processing configuration](https://docs.reducto.ai/configs/parse/spreadsheet)
-- [Per-page billing breakdown](https://docs.reducto.ai/reference/page-billing-breakdown)
-- [Supported upload formats](https://docs.reducto.ai/upload/overview)
+1. All seven supported extensions use cell metadata and never page pricing.
+2. Accurate, Fast, and Disabled calculations match the documented credit ratios
+   and prorate partial credits.
+3. Missing counts return the known subtotal as incomplete.
+4. Known counts above `max_cell_count` fail validation, while the limit never
+   becomes the estimated count.
+5. Parse or Extract charges the spreadsheet base once, including mixed batches.
+6. Ordinary document calculations remain compatible at the API boundary and
+   numerically identical in the estimator.
+7. Unpriced spreadsheet operations preserve the known subtotal and require
+   review unless the known subtotal already requires deny.
+8. Custom simulator rates cannot enter the API request or change its default
+   calculation.
+9. Imported settings hydrate the builder and survive profile copying without
+   treating configuration alone as spreadsheet input.
+10. No workbook parsing or upload is performed during estimation.

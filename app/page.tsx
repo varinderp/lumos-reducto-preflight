@@ -15,10 +15,12 @@ import {
   DEFAULT_PRICING_UNIT_RATES,
   estimatePipeline,
   FIXED_PRICING_RULES,
+  isSpreadsheetFilename as isSpreadsheetName,
   normalizeRequest,
   RATE_CARD,
   R1_RATE_CARD,
   type PricingUnitRates,
+  type PublicEstimateDocument,
   type PublicEstimateRequest,
   type PublicPipeline,
 } from "@/lib/pricing";
@@ -33,6 +35,7 @@ import {
   type ManualParsingAddOnDraft,
   type ManualPipelineDraft,
   type ManualPipelineErrors,
+  type ManualSpreadsheetDraft,
 } from "@/lib/manual-pipeline";
 import { importReductoCode, type ReductoCodeImportResult } from "@/lib/reducto-code-import";
 import { serializeLumosProfile } from "@/lib/profile-copy";
@@ -43,6 +46,7 @@ type DocumentRow = {
   id: string;
   name: string;
   pages: number;
+  estimatedNonEmptyCells: string;
   note: string;
   file?: File;
 };
@@ -67,7 +71,12 @@ const RATE_GROUPS = [
   {
     name: "Parsing add-ons",
     fields: [
-      { key: "advancedChart", label: "Advanced Chart", perThousand: false },
+      {
+        key: "advancedChart",
+        label: "Advanced Chart",
+        perThousand: false,
+        unit: "/ detected chart",
+      },
       { key: "ocrDataReturn", label: "OCR data return", perThousand: true },
       {
         key: "promptedBlocks",
@@ -101,9 +110,25 @@ const RATE_GROUPS = [
       { key: "editPrefilled", label: "Fully prefilled Edit", perThousand: true },
     ],
   },
+  {
+    name: "Spreadsheet",
+    fields: [
+      {
+        key: "spreadsheetCredit",
+        label: "Spreadsheet credit (Lumos default)",
+        perThousand: false,
+        unit: "/ credit",
+      },
+    ],
+  },
 ] as const satisfies ReadonlyArray<{
   name: string;
-  fields: ReadonlyArray<{ key: RateFieldKey; label: string; perThousand: boolean }>;
+  fields: ReadonlyArray<{
+    key: RateFieldKey;
+    label: string;
+    perThousand: boolean;
+    unit?: string;
+  }>;
 }>;
 
 const RATE_FIELD_KEYS = RATE_GROUPS.flatMap((group) => group.fields.map((field) => field.key));
@@ -204,6 +229,7 @@ function cloneManualDraft(draft: ManualPipelineDraft): ManualPipelineDraft {
     parse: {
       ...draft.parse,
       agenticScopes: { ...draft.parse.agenticScopes },
+      spreadsheet: { ...draft.parse.spreadsheet },
       pageSelection: {
         ...draft.parse.pageSelection,
         ranges: draft.parse.pageSelection.ranges.map((range) => ({ ...range })),
@@ -213,6 +239,7 @@ function cloneManualDraft(draft: ManualPipelineDraft): ManualPipelineDraft {
     extract: {
       ...draft.extract,
       parsingAddOns: { ...draft.extract.parsingAddOns },
+      spreadsheet: { ...draft.extract.spreadsheet },
       pageSelection: {
         ...draft.extract.pageSelection,
         ranges: draft.extract.pageSelection.ranges.map((range) => ({ ...range })),
@@ -221,6 +248,7 @@ function cloneManualDraft(draft: ManualPipelineDraft): ManualPipelineDraft {
     split: {
       ...draft.split,
       parsingAddOns: { ...draft.split.parsingAddOns },
+      spreadsheet: { ...draft.split.spreadsheet },
       pageSelection: {
         ...draft.split.pageSelection,
         ranges: draft.split.pageSelection.ranges.map((range) => ({ ...range })),
@@ -419,11 +447,13 @@ function ParsingAddOnControls({
   endpoint,
   value,
   errors,
+  hasSpreadsheetDocuments,
   onChange,
 }: {
   endpoint: "extract" | "split";
   value: ManualParsingAddOnDraft;
   errors: ManualPipelineErrors;
+  hasSpreadsheetDocuments: boolean;
   onChange: (value: ManualParsingAddOnDraft) => void;
 }) {
   const endpointLabel = endpoint === "extract" ? "Extract" : "Split";
@@ -523,10 +553,86 @@ function ParsingAddOnControls({
               ) : (
                 <p className="aside">The known subtotal will exclude the detected-chart charge.</p>
               )}
+              {hasSpreadsheetDocuments && (
+                <p className="aside">
+                  Chart counts apply to non-spreadsheet documents. Spreadsheet chart costs remain
+                  excluded.
+                </p>
+              )}
             </div>
           )}
         </div>
       )}
+    </fieldset>
+  );
+}
+
+function SpreadsheetSettings({
+  endpoint,
+  value,
+  errors,
+  onChange,
+}: {
+  endpoint: "parse" | "extract";
+  value: ManualSpreadsheetDraft;
+  errors: ManualPipelineErrors;
+  onChange: (value: ManualSpreadsheetDraft) => void;
+}) {
+  const clusteringError = errors[`${endpoint}.spreadsheet.clustering`];
+  const maxError = errors[`${endpoint}.spreadsheet.maxCellCount`];
+  const clusteringErrorId = `${endpoint}-spreadsheet-clustering-error`;
+  const maxErrorId = `${endpoint}-spreadsheet-max-error`;
+  return (
+    <fieldset className="builder-section compact-builder-section spreadsheet-settings">
+      <legend>Spreadsheet</legend>
+      <div className="form-grid">
+        <label>
+          Clustering
+          <select
+            value={value.clustering}
+            aria-invalid={clusteringError ? "true" : undefined}
+            aria-describedby={clusteringError ? clusteringErrorId : undefined}
+            onChange={(event) =>
+              onChange({
+                ...value,
+                configured: true,
+                clustering: event.target.value as ManualSpreadsheetDraft["clustering"],
+              })
+            }
+          >
+            <option value="accurate">Accurate (default)</option>
+            <option value="fast">Fast</option>
+            <option value="disabled">Disabled</option>
+          </select>
+          {clusteringError && (
+            <span id={clusteringErrorId} className="field-error">{clusteringError}</span>
+          )}
+        </label>
+        <label className="number-field">
+          Maximum non-empty cells
+          <input
+            type="number"
+            min="0"
+            step="1"
+            inputMode="numeric"
+            placeholder="No limit"
+            value={value.maxCellCount}
+            aria-invalid={maxError ? "true" : undefined}
+            aria-describedby={maxError ? maxErrorId : undefined}
+            onChange={(event) =>
+              onChange({
+                ...value,
+                configured: true,
+                maxCellCount: event.target.value,
+              })
+            }
+          />
+          {maxError && <span id={maxErrorId} className="field-error">{maxError}</span>}
+        </label>
+      </div>
+      <p className="aside">
+        Clustering sets cell usage. The maximum is a Reducto safety limit, not the estimate.
+      </p>
     </fieldset>
   );
 }
@@ -536,19 +642,44 @@ function makeExampleDocuments(): DocumentRow[] {
     id: `example-${index}`,
     name,
     pages,
+    estimatedNonEmptyCells: "",
     note: "Example metadata",
   }));
 }
 
 function money(value: number) {
-  const decimalPlaces = value < 1 ? 4 : 2;
+  const absolute = Math.abs(value);
+  const decimalPlaces = absolute > 0 && absolute < 0.0001 ? 6 : absolute < 1 ? 4 : 2;
   const factor = 10 ** decimalPlaces;
   const rounded = Math.round((value + Number.EPSILON) * factor) / factor;
   return `$${rounded.toFixed(decimalPlaces)}`;
 }
 
-function isSpreadsheetName(name: string) {
-  return /\.(?:xls|xlsx|xlsm|xltx|xltm|csv|qpw)(?:[?#].*)?$/i.test(name);
+function rateMoney(value: number) {
+  return value.toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 6,
+  });
+}
+
+function toPublicEstimateDocument(document: DocumentRow): PublicEstimateDocument {
+  if (!isSpreadsheetName(document.name)) {
+    return { name: document.name, pages: document.pages };
+  }
+  const rawCells = document.estimatedNonEmptyCells.trim();
+  if (rawCells === "") return { name: document.name };
+  if (!/^\d+$/.test(rawCells)) {
+    throw new Error(
+      `${document.name} needs a whole estimated non-empty-cell count of 0 or greater.`,
+    );
+  }
+  const cells = Number(rawCells);
+  if (!Number.isSafeInteger(cells)) {
+    throw new Error(`${document.name} has a cell count that is too large to estimate safely.`);
+  }
+  return { name: document.name, estimated_non_empty_cells: cells };
 }
 
 function importSummary(result: ReductoCodeImportResult) {
@@ -588,6 +719,27 @@ function importSummary(result: ReductoCodeImportResult) {
 
 function unpricedFactorLabel(factor: string, advancedChartRate: string) {
   if (factor === "extract.include_images") return "Extract image context";
+  if (factor === "spreadsheet.non_empty_cell_count") {
+    return "the missing estimated non-empty-cell count";
+  }
+  if (factor === "spreadsheet.base_processing") {
+    return "spreadsheet processing outside supported Parse or Extract pricing";
+  }
+  if (factor === "spreadsheet.classify") return "Classify work on spreadsheets";
+  if (factor === "spreadsheet.split") return "Split work on spreadsheets";
+  if (factor === "spreadsheet.edit") return "Edit work on spreadsheets";
+  const spreadsheetAddOn = factor.match(
+    /^spreadsheet\.(parse|extract|split)\.(return_ocr_data|prompted_processing|advanced_chart)$/,
+  );
+  if (spreadsheetAddOn) {
+    const endpoint = spreadsheetAddOn[1].charAt(0).toUpperCase() + spreadsheetAddOn[1].slice(1);
+    const feature = {
+      return_ocr_data: "OCR data return",
+      prompted_processing: "prompted processing",
+      advanced_chart: "Advanced Chart",
+    }[spreadsheetAddOn[2]];
+    return `${endpoint} ${feature} on spreadsheets`;
+  }
   if (factor.endsWith(".advanced_chart_count")) {
     const endpoint = factor.split(".")[0];
     const label = endpoint.charAt(0).toUpperCase() + endpoint.slice(1);
@@ -621,14 +773,16 @@ async function inspectFile(file: File): Promise<DocumentRow> {
     note = "Enter the slide count";
   } else if (/\.(doc|docx)$/.test(name)) {
     note = "Enter the rendered page count";
-  } else if (/\.(xls|xlsx|csv)$/.test(name)) {
-    note = "Spreadsheet calculations are currently unsupported";
+  } else if (/\.(xls|xlsx|xlsm|xltx|xltm|csv|qpw)$/.test(name)) {
+    pages = 0;
+    note = "Enter expected non-empty cells after exclusions or filtering";
   }
 
   return {
     id: crypto.randomUUID(),
     name: file.name,
     pages,
+    estimatedNonEmptyCells: "",
     note,
     file,
   };
@@ -711,7 +865,39 @@ export default function Home() {
   }, [manualDraft.extract.mode, manualDraft.split.mode]);
 
   const hasSpreadsheet = documents.some((document) => isSpreadsheetName(document.name));
-  const documentTotalPages = documents.reduce((total, document) => total + document.pages, 0);
+  const documentTotalPages = documents.reduce(
+    (total, document) =>
+      isSpreadsheetName(document.name) ? total : total + document.pages,
+    0,
+  );
+  const spreadsheetDocumentCount = documents.filter((document) =>
+    isSpreadsheetName(document.name),
+  ).length;
+  const spreadsheetCellsEstimated = documents.reduce((total, document) => {
+    if (!isSpreadsheetName(document.name)) return total;
+    const rawCells = document.estimatedNonEmptyCells.trim();
+    if (!/^\d+$/.test(rawCells)) return total;
+    const cells = Number(rawCells);
+    return Number.isSafeInteger(cells) ? total + cells : total;
+  }, 0);
+  const spreadsheetDocumentsMissingCellCount = documents.filter(
+    (document) =>
+      isSpreadsheetName(document.name) &&
+      document.estimatedNonEmptyCells.trim() === "",
+  ).length;
+  const requestDocumentsResult = useMemo(() => {
+    try {
+      return {
+        documents: documents.map(toPublicEstimateDocument),
+        error: "",
+      };
+    } catch (error) {
+      return {
+        documents: null,
+        error: error instanceof Error ? error.message : "Check the document metadata.",
+      };
+    }
+  }, [documents]);
   const hasDownstreamEndpoint =
     manualDraft.extract.mode !== "off" || manualDraft.split.mode !== "off";
   const parseIncludedDownstream =
@@ -728,7 +914,7 @@ export default function Home() {
     if (pipelineDraftState !== "applied") return { rates, rules };
 
     const standaloneParse = pipeline.parse != null && pipeline.extract == null && pipeline.split == null;
-    if (standaloneParse) {
+    if (standaloneParse && documentTotalPages > 0) {
       const parseModel = pipeline.parse?.settings?.model === "r-1" ? "r-1" : "legacy";
       if (parseModel === "r-1") {
         rates.add("parseR1");
@@ -749,8 +935,8 @@ export default function Home() {
       }
       if (pipeline.parse?.queue_priority === "batch") rules.add("batch");
     }
-    if (pipeline.classify != null) rates.add("classify");
-    if (pipeline.extract != null) {
+    if (pipeline.classify != null && documentTotalPages > 0) rates.add("classify");
+    if (pipeline.extract != null && documentTotalPages > 0) {
       if (pipeline.lumos_assumptions?.conditional_extract_routing) {
         rates.add("extract");
         rates.add("deepExtract");
@@ -772,7 +958,7 @@ export default function Home() {
         }
       }
     }
-    if (pipeline.split != null) {
+    if (pipeline.split != null && documentTotalPages > 0) {
       rates.add(pipeline.split.settings?.deep_split ? "deepSplit" : "split");
       if (appliedProcessingContext?.split_input !== "jobid") {
         const modes = pipeline.split.parsing?.enhance?.agentic ?? [];
@@ -786,22 +972,41 @@ export default function Home() {
         }
       }
     }
-    if (pipeline.edit != null) {
+    if (pipeline.edit != null && documentTotalPages > 0) {
       rates.add("edit");
       if ((pipeline.lumos_assumptions?.known_fully_prefilled_edit_pages ?? 0) > 0) {
         rates.add("editPrefilled");
       }
     }
+    if (
+      hasSpreadsheet &&
+      (standaloneParse || pipeline.extract != null)
+    ) {
+      rates.add("spreadsheetCredit");
+    }
     return { rates, rules };
-  }, [appliedProcessingContext, pipeline, pipelineDraftState]);
+  }, [
+    appliedProcessingContext,
+    documentTotalPages,
+    hasSpreadsheet,
+    pipeline,
+    pipelineDraftState,
+  ]);
 
   const estimateResult = useMemo(() => {
-    if (!documents.length || hasSpreadsheet || pipelineDraftState !== "applied") {
+    if (requestDocumentsResult.error) {
+      return { estimate: null, error: requestDocumentsResult.error };
+    }
+    if (
+      !documents.length ||
+      !requestDocumentsResult.documents ||
+      pipelineDraftState !== "applied"
+    ) {
       return { estimate: null, error: "" };
     }
     try {
       const normalized = normalizeRequest({
-        documents: documents.map(({ name, pages }) => ({ name, pages })),
+        documents: requestDocumentsResult.documents,
         pipeline,
         policy: { max_total_usd: budget },
         ...(appliedProcessingContext
@@ -820,19 +1025,26 @@ export default function Home() {
     documents,
     pipeline,
     budget,
-    hasSpreadsheet,
+    requestDocumentsResult,
     pipelineDraftState,
     appliedRates,
   ]);
   const estimate = estimateResult.estimate;
 
   const publicEstimateResult = useMemo(() => {
-    if (!documents.length || hasSpreadsheet || pipelineDraftState !== "applied") {
+    if (requestDocumentsResult.error) {
+      return { estimate: null, error: requestDocumentsResult.error };
+    }
+    if (
+      !documents.length ||
+      !requestDocumentsResult.documents ||
+      pipelineDraftState !== "applied"
+    ) {
       return { estimate: null, error: "" };
     }
     try {
       const normalized = normalizeRequest({
-        documents: documents.map(({ name, pages }) => ({ name, pages })),
+        documents: requestDocumentsResult.documents,
         pipeline,
         policy: { max_total_usd: budget },
         ...(appliedProcessingContext
@@ -851,7 +1063,7 @@ export default function Home() {
     documents,
     pipeline,
     budget,
-    hasSpreadsheet,
+    requestDocumentsResult,
     pipelineDraftState,
   ]);
   const apiEstimate = isCustomRateCard ? publicEstimateResult.estimate : estimate;
@@ -864,8 +1076,9 @@ export default function Home() {
   const apiRequest = useMemo(
     () =>
       pipelineDraftState === "applied"
+        && requestDocumentsResult.documents
         ? {
-            documents: documents.map(({ name, pages }) => ({ name, pages })),
+            documents: requestDocumentsResult.documents,
             pipeline,
             policy: { max_total_usd: budget },
             ...(appliedProcessingContext
@@ -873,35 +1086,50 @@ export default function Home() {
               : {}),
           }
         : null,
-    [appliedProcessingContext, documents, pipeline, budget, pipelineDraftState],
+    [
+      appliedProcessingContext,
+      requestDocumentsResult.documents,
+      pipeline,
+      budget,
+      pipelineDraftState,
+    ],
   );
 
-  const apiResponse = useMemo(
-    () =>
-      pipelineDraftState !== "applied"
-        ? { error: "Apply the pipeline changes before requesting an estimate." }
-        : apiEstimate
-        ? {
+  const apiResponse = useMemo(() => {
+    if (pipelineDraftState !== "applied") {
+      return { error: "Apply the pipeline changes before requesting an estimate." };
+    }
+    if (!apiEstimate) {
+      return estimateResult.error
+        ? { error: estimateResult.error }
+        : { decision: "awaiting_documents", estimate: null };
+    }
+    const hasSpreadsheets = apiEstimate.spreadsheetDocuments > 0;
+    const usd = (value: number) => Number(value.toFixed(hasSpreadsheets ? 6 : 4));
+    return {
             decision: apiEstimate.decision,
             estimate: {
-              low_usd: Number(apiEstimate.low.toFixed(4)),
-              likely_usd: Number(apiEstimate.likely.toFixed(4)),
-              high_usd: Number(apiEstimate.high.toFixed(4)),
+              low_usd: usd(apiEstimate.low),
+              likely_usd: usd(apiEstimate.likely),
+              high_usd: usd(apiEstimate.high),
               currency: "USD",
             },
             breakdown: {
-              parse_low_usd: Number(apiEstimate.parseLow.toFixed(4)),
-              parse_likely_usd: Number(apiEstimate.parseLikely.toFixed(4)),
-              parse_high_usd: Number(apiEstimate.parseHigh.toFixed(4)),
-              classify_usd: Number(apiEstimate.classifyCost.toFixed(4)),
-              extract_low_usd: Number(apiEstimate.extractLow.toFixed(4)),
-              extract_likely_usd: Number(apiEstimate.extractLikely.toFixed(4)),
-              extract_high_usd: Number(apiEstimate.extractHigh.toFixed(4)),
-              split_usd: Number(apiEstimate.splitCost.toFixed(4)),
-              split_low_usd: Number(apiEstimate.splitLow.toFixed(4)),
-              split_likely_usd: Number(apiEstimate.splitLikely.toFixed(4)),
-              split_high_usd: Number(apiEstimate.splitHigh.toFixed(4)),
-              edit_usd: Number(apiEstimate.editCost.toFixed(4)),
+              parse_low_usd: usd(apiEstimate.parseLow),
+              parse_likely_usd: usd(apiEstimate.parseLikely),
+              parse_high_usd: usd(apiEstimate.parseHigh),
+              classify_usd: usd(apiEstimate.classifyCost),
+              extract_low_usd: usd(apiEstimate.extractLow),
+              extract_likely_usd: usd(apiEstimate.extractLikely),
+              extract_high_usd: usd(apiEstimate.extractHigh),
+              split_usd: usd(apiEstimate.splitCost),
+              split_low_usd: usd(apiEstimate.splitLow),
+              split_likely_usd: usd(apiEstimate.splitLikely),
+              split_high_usd: usd(apiEstimate.splitHigh),
+              edit_usd: usd(apiEstimate.editCost),
+              ...(hasSpreadsheets
+                ? { spreadsheet_usd: usd(apiEstimate.spreadsheetCost) }
+                : {}),
               parsing_add_ons: apiEstimate.parsingAddOns,
             },
             usage: {
@@ -929,12 +1157,29 @@ export default function Home() {
                 extract: apiEstimate.parsingAddOns.extract.charts,
                 split: apiEstimate.parsingAddOns.split.charts,
               },
+              ...(hasSpreadsheets
+                ? {
+                    spreadsheets: {
+                      documents: apiEstimate.spreadsheetDocuments,
+                      estimated_non_empty_cells:
+                        apiEstimate.spreadsheetCellsEstimated,
+                      documents_missing_cell_count:
+                        apiEstimate.spreadsheetDocumentsMissingCellCount,
+                      credits: apiEstimate.spreadsheetCredits,
+                      clustering: apiEstimate.spreadsheetClustering,
+                      max_cell_count: apiEstimate.spreadsheetMaxCellCount,
+                      base_endpoint: apiEstimate.spreadsheetBaseEndpoint,
+                    },
+                  }
+                : {}),
             },
             assumptions_used: {
-              ...(apiEstimate.parseMode === "standalone" && apiEstimate.parseModel === "legacy"
+              ...(apiEstimate.parseMode === "standalone" &&
+              apiEstimate.parseModel === "legacy" &&
+              apiEstimate.parsePages > 0
                 ? { likely_complex_parse_share: apiEstimate.parseLikelyComplexShare }
                 : {}),
-              ...(apiEstimate.parseAdvancedChartCounts
+              ...(apiEstimate.parseAdvancedChartCounts && apiEstimate.parsePages > 0
                 ? {
                     advanced_chart_counts: {
                       likely: apiEstimate.parseAdvancedChartCounts.likely,
@@ -942,7 +1187,8 @@ export default function Home() {
                     },
                   }
                 : {}),
-              ...(pipeline.lumos_assumptions?.conditional_extract_routing
+              ...(pipeline.lumos_assumptions?.conditional_extract_routing &&
+              apiEstimate.extractPages > 0
                 ? {
                     likely_deep_extract_share:
                       pipeline.lumos_assumptions.likely_deep_extract_share ?? 0.25,
@@ -950,19 +1196,20 @@ export default function Home() {
                 : {}),
             },
             rate_card: apiEstimate.parseModel === "r-1" ? R1_RATE_CARD : RATE_CARD,
+            ...(hasSpreadsheets
+              ? {
+                  spreadsheet_rate_basis: {
+                    usd_per_credit: DEFAULT_PRICING_UNIT_RATES.spreadsheetCredit,
+                    basis: "lumos_default",
+                    note: "Consult your Reducto rate card.",
+                  },
+                }
+              : {}),
             has_range: apiEstimate.low !== apiEstimate.high,
             estimate_complete: apiEstimate.estimateComplete,
             unpriced_cost_factors: apiEstimate.unpricedCostFactors,
-          }
-        : hasSpreadsheet
-          ? {
-              error: "Spreadsheet pricing needs billable cell counts and your Reducto rate card.",
-            }
-          : estimateResult.error
-            ? { error: estimateResult.error }
-            : { decision: "awaiting_documents", estimate: null },
-    [apiEstimate, documents.length, estimateResult.error, hasSpreadsheet, pipeline, pipelineDraftState],
-  );
+          };
+  }, [apiEstimate, documents.length, estimateResult.error, pipeline, pipelineDraftState]);
 
   const includedAddOnBreakdown = estimate
     ? (["parse", "extract", "split"] as const).flatMap((endpoint) => {
@@ -985,29 +1232,36 @@ export default function Home() {
     : [];
   const estimateBreakdown = estimate
     ? [
-        estimate.parseMode === "standalone"
+        estimate.parseMode === "standalone" && estimate.parsePages > 0
           ? `${estimate.parseModel === "r-1" ? "r‑1 Parse" : "Legacy Parse"} ${
               estimate.parseLow === estimate.parseHigh
                 ? money(estimate.parseLikely)
                 : `${money(estimate.parseLow)}–${money(estimate.parseHigh)}`
             } across ${estimate.parsePages} priced pages`
           : null,
-        pipeline.classify != null ? `Classify ${money(estimate.classifyCost)}` : null,
-        pipeline.extract != null
+        pipeline.classify != null && estimate.classifyPages > 0
+          ? `Classify ${money(estimate.classifyCost)}`
+          : null,
+        pipeline.extract != null && estimate.extractPages > 0
           ? `Extract ${
               estimate.extractLow === estimate.extractHigh
                 ? money(estimate.extractLikely)
                 : `${money(estimate.extractLow)}–${money(estimate.extractHigh)}`
             } across ${estimate.extractPages} priced pages`
           : null,
-        pipeline.split != null
+        pipeline.split != null && estimate.splitPages > 0
           ? `Split ${
               estimate.splitLow === estimate.splitHigh
                 ? money(estimate.splitLikely)
                 : `${money(estimate.splitLow)}–${money(estimate.splitHigh)}`
             } across ${estimate.splitPages} priced pages`
           : null,
-        pipeline.edit != null ? `Edit ${money(estimate.editCost)}` : null,
+        pipeline.edit != null && estimate.totalPages > 0
+          ? `Edit ${money(estimate.editCost)}`
+          : null,
+        estimate.spreadsheetDocuments > 0 && estimate.spreadsheetBaseEndpoint
+          ? `Spreadsheet ${money(estimate.spreadsheetCost)} for ${estimate.spreadsheetCellsEstimated.toLocaleString()} estimated non-empty cells (${estimate.spreadsheetCredits.toLocaleString()} credits, ${estimate.spreadsheetClustering})`
+          : null,
         includedAddOnBreakdown.length > 0
           ? `Add-ons included above: ${includedAddOnBreakdown.join("; ")}`
           : null,
@@ -1116,27 +1370,41 @@ export default function Home() {
     }
     const processingContext = manualDraftProcessingContext(manualDraft);
 
-    let validatedUnpricedCostFactors: string[] = [];
     try {
+      if (documents.length > 0 && !requestDocumentsResult.documents) {
+        throw new Error(requestDocumentsResult.error);
+      }
       const normalized = normalizeRequest({
-        documents: documents.length > 0 && !hasSpreadsheet
-          ? documents.map(({ name, pages }) => ({ name, pages }))
+        documents: documents.length > 0 && requestDocumentsResult.documents
+          ? requestDocumentsResult.documents
           : [{ name: "validation.pdf", pages: 1_000_000 }],
         pipeline: result.pipeline,
         ...(processingContext ? { processing_context: processingContext } : {}),
       });
-      validatedUnpricedCostFactors = estimatePipeline(
-        normalized,
-        appliedRates,
-      ).unpricedCostFactors;
+      estimatePipeline(normalized, appliedRates);
     } catch (error) {
-      const invalidEndpoint = manualSetupErrorEndpoint(error);
-      const errorField = invalidEndpoint === "classify"
+      const setupMessage = manualSetupError(error);
+      let invalidEndpoint = manualSetupErrorEndpoint(error);
+      let errorField = invalidEndpoint === "classify"
         ? "classify.start"
         : invalidEndpoint === "parse" || invalidEndpoint === "extract" || invalidEndpoint === "split"
           ? `${invalidEndpoint}.pageSelection`
           : "setup";
-      setManualErrors({ [errorField]: manualSetupError(error) });
+      if (setupMessage.includes("spreadsheet.max_cell_count")) {
+        const spreadsheetEndpoint =
+          result.pipeline.parse != null &&
+          result.pipeline.extract == null &&
+          result.pipeline.split == null
+            ? "parse"
+            : result.pipeline.extract != null
+              ? "extract"
+              : null;
+        if (spreadsheetEndpoint) {
+          invalidEndpoint = spreadsheetEndpoint;
+          errorField = `${spreadsheetEndpoint}.spreadsheet.maxCellCount`;
+        }
+      }
+      setManualErrors({ [errorField]: setupMessage });
       setPipelineError("");
       setPipelineDraftState("invalid");
       if (invalidEndpoint) {
@@ -1149,11 +1417,13 @@ export default function Home() {
 
     setPipeline(result.pipeline);
     setAppliedProcessingContext(processingContext);
+    const preservedUnpricedCostFactors =
+      result.pipeline.lumos_assumptions?.unpriced_cost_factors ?? [];
     setManualDraft((current) => ({
       ...current,
       assumptions: {
         ...current.assumptions,
-        unpricedCostFactors: [...validatedUnpricedCostFactors],
+        unpricedCostFactors: [...preservedUnpricedCostFactors],
       },
     }));
     setManualErrors({});
@@ -1173,9 +1443,12 @@ export default function Home() {
     }
 
     try {
+      if (documents.length > 0 && !requestDocumentsResult.documents) {
+        throw new Error(requestDocumentsResult.error);
+      }
       const normalized = normalizeRequest({
-        documents: documents.length > 0 && !hasSpreadsheet
-          ? documents.map(({ name, pages }) => ({ name, pages }))
+        documents: documents.length > 0 && requestDocumentsResult.documents
+          ? requestDocumentsResult.documents
           : [{ name: "validation.pdf", pages: 1_000_000 }],
         pipeline: codeImport.pipeline,
       });
@@ -1253,6 +1526,12 @@ export default function Home() {
 
     if (!files.length) {
       setLiveError("Choose at least one uploaded file before starting a Reducto job.");
+      return;
+    }
+    if (files.some((file) => isSpreadsheetName(file.name))) {
+      setLiveError(
+        "Spreadsheet verification is unavailable because Lumos does not upload workbook contents.",
+      );
       return;
     }
     if (!apiKey.trim() || !pipelineId.trim() || !confirmed) {
@@ -1480,7 +1759,7 @@ export default function Home() {
           className="hidden-input"
           type="file"
           multiple
-          accept=".pdf,.png,.jpg,.jpeg,.gif,.heic,.bmp,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv"
+          accept=".pdf,.png,.jpg,.jpeg,.gif,.heic,.bmp,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.xlsm,.xltx,.xltm,.csv,.qpw"
           onChange={onFileChange}
         />
 
@@ -1490,22 +1769,59 @@ export default function Home() {
           <div className="table-wrap">
             <table>
               <thead>
-                <tr><th>Document</th><th>Pages</th><th>Mode</th><th /></tr>
+                <tr><th>Document</th><th>Pages / estimated non-empty cells</th><th>Mode</th><th /></tr>
               </thead>
               <tbody>
-                {documents.map((document) => (
+                {documents.map((document) => {
+                  const spreadsheet = isSpreadsheetName(document.name);
+                  const rawCells = document.estimatedNonEmptyCells.trim();
+                  const invalidCells =
+                    spreadsheet &&
+                    rawCells !== "" &&
+                    (!/^\d+$/.test(rawCells) || !Number.isSafeInteger(Number(rawCells)));
+                  const cellErrorId = `cell-count-error-${document.id}`;
+                  return (
                   <tr key={document.id}>
                     <td>{document.name}<small>{document.note}</small></td>
                     <td>
-                      <input
-                        aria-label={`Pages in ${document.name}`}
-                        type="number"
-                        min="1"
-                        value={document.pages}
-                        onChange={(event) =>
-                          updateDocument(document.id, { pages: Math.max(1, Number(event.target.value)) })
-                        }
-                      />
+                      {spreadsheet ? (
+                        <>
+                          <input
+                            className="cell-count-input"
+                            aria-label={`Estimated non-empty cells in ${document.name}`}
+                            type="number"
+                            min="0"
+                            step="1"
+                            inputMode="numeric"
+                            placeholder="Non-empty cells"
+                            value={document.estimatedNonEmptyCells}
+                            aria-invalid={invalidCells ? "true" : undefined}
+                            aria-describedby={invalidCells ? cellErrorId : undefined}
+                            onChange={(event) =>
+                              updateDocument(document.id, {
+                                estimatedNonEmptyCells: event.target.value,
+                              })
+                            }
+                          />
+                          {invalidCells && (
+                            <small id={cellErrorId} className="field-error">
+                              Enter a whole number of 0 or greater.
+                            </small>
+                          )}
+                        </>
+                      ) : (
+                        <input
+                          aria-label={`Pages in ${document.name}`}
+                          type="number"
+                          min="1"
+                          value={document.pages}
+                          onChange={(event) =>
+                            updateDocument(document.id, {
+                              pages: Math.max(1, Number(event.target.value)),
+                            })
+                          }
+                        />
+                      )}
                     </td>
                     <td>
                       <span>{configuredMode}</span>
@@ -1521,7 +1837,8 @@ export default function Home() {
                       </button>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1535,7 +1852,7 @@ export default function Home() {
         <p className="document-total" aria-live="polite">
           <strong>Uploaded</strong>{" "}
           {documents.length > 0
-            ? `${documents.length} document${documents.length === 1 ? "" : "s"}, ${documentTotalPages} page${documentTotalPages === 1 ? "" : "s"}`
+            ? `${documents.length} document${documents.length === 1 ? "" : "s"}, ${documentTotalPages} page${documentTotalPages === 1 ? "" : "s"}${spreadsheetDocumentCount > 0 ? `, ${spreadsheetCellsEstimated.toLocaleString()} estimated non-empty cells${spreadsheetDocumentsMissingCellCount > 0 ? ` (${spreadsheetDocumentsMissingCellCount} count${spreadsheetDocumentsMissingCellCount === 1 ? "" : "s"} missing)` : ""}` : ""}`
             : "No documents yet"}
         </p>
         <div className="pipeline-tabs" role="tablist" aria-label="Pipeline configuration input">
@@ -1859,6 +2176,19 @@ export default function Home() {
                               }))
                             }
                           />
+                          {(hasSpreadsheet || manualDraft.parse.spreadsheet.configured) && (
+                            <SpreadsheetSettings
+                              endpoint="parse"
+                              value={manualDraft.parse.spreadsheet}
+                              errors={manualErrors}
+                              onChange={(spreadsheet) =>
+                                updateManualDraft((current) => ({
+                                  ...current,
+                                  parse: { ...current.parse, spreadsheet },
+                                }))
+                              }
+                            />
+                          )}
                           <fieldset className="builder-section compact-builder-section">
                             <legend>Parsing add-ons</legend>
                             <div className="check-grid">
@@ -2027,6 +2357,12 @@ export default function Home() {
                                 </div>
                               ) : (
                                 <p className="aside">The detected-chart charge will remain excluded.</p>
+                              )}
+                              {hasSpreadsheet && (
+                                <p className="aside">
+                                  Chart counts apply to non-spreadsheet documents. Spreadsheet chart
+                                  costs remain excluded.
+                                </p>
                               )}
                             </div>
                           )}
@@ -2220,10 +2556,24 @@ export default function Home() {
                               }))
                             }
                           />
+                          {(hasSpreadsheet || manualDraft.extract.spreadsheet.configured) && (
+                            <SpreadsheetSettings
+                              endpoint="extract"
+                              value={manualDraft.extract.spreadsheet}
+                              errors={manualErrors}
+                              onChange={(spreadsheet) =>
+                                updateManualDraft((current) => ({
+                                  ...current,
+                                  extract: { ...current.extract, spreadsheet },
+                                }))
+                              }
+                            />
+                          )}
                           <ParsingAddOnControls
                             endpoint="extract"
                             value={manualDraft.extract.parsingAddOns}
                             errors={manualErrors}
+                            hasSpreadsheetDocuments={hasSpreadsheet}
                             onChange={(parsingAddOns) =>
                               updateManualDraft((current) => ({
                                 ...current,
@@ -2393,6 +2743,7 @@ export default function Home() {
                           endpoint="split"
                           value={manualDraft.split.parsingAddOns}
                           errors={manualErrors}
+                          hasSpreadsheetDocuments={hasSpreadsheet}
                           onChange={(parsingAddOns) =>
                             updateManualDraft((current) => ({
                               ...current,
@@ -2702,7 +3053,7 @@ export default function Home() {
                             }}
                           />
                           <span className="rate-unit">
-                            {field.perThousand ? "/ 1,000 pages" : "/ detected chart"}
+                            {"unit" in field ? field.unit : "/ 1,000 pages"}
                           </span>
                         </span>
                         {error && <span id={errorId} className="rate-field-error">{error}</span>}
@@ -2710,6 +3061,12 @@ export default function Home() {
                     );
                   })}
                 </div>
+                {group.name === "Spreadsheet" && (
+                  <p className="aside spreadsheet-rate-note">
+                    Accurate uses 1 credit per 1,000 cells. Fast and Disabled use 1 per
+                    5,000. Consult your Reducto rate card.
+                  </p>
+                )}
               </fieldset>
             ))}
 
@@ -2749,7 +3106,7 @@ export default function Home() {
                 setRateErrors({});
               }}
             >
-              Reset to public rates
+              Reset to default rates
             </button>
             <div>
               <button type="button" onClick={() => rateCardDialog.current?.close()}>
@@ -2768,11 +3125,6 @@ export default function Home() {
           </p>
         ) : pipelineDraftState === "invalid" ? (
           <p className="empty">Fix the configuration and apply it before estimating</p>
-        ) : hasSpreadsheet ? (
-          <p className="empty">
-            Spreadsheet calculations are currently unsupported because Reducto prices them from
-            cell usage using the customer&apos;s rate card.
-          </p>
         ) : estimateResult.error ? (
           <p className="error" role="alert">{estimateResult.error}</p>
         ) : !estimate ? (
@@ -2802,10 +3154,19 @@ export default function Home() {
               </p>
             )}
             <p>
-              {documents.length} documents, {estimate.totalPages} pages
+              {documents.length} documents, {estimate.totalPages} page{estimate.totalPages === 1 ? "" : "s"}
+              {estimate.spreadsheetDocuments > 0
+                ? `, ${estimate.spreadsheetCellsEstimated.toLocaleString()} estimated non-empty cells, ${estimate.spreadsheetCredits.toLocaleString()} credits`
+                : ""}
               {estimateBreakdown.length > 0 ? `. ${estimateBreakdown.join("; ")}.` : "."}
               {parsingNote ? ` ${parsingNote}` : ""}
             </p>
+            {estimate.spreadsheetDocuments > 0 && (
+              <p className="aside">
+                Spreadsheet estimates assume {rateMoney(appliedRates.spreadsheetCredit)} per
+                credit. Consult your Reducto rate card.
+              </p>
+            )}
           </div>
         )}
       </section>
@@ -2826,8 +3187,7 @@ export default function Home() {
               <tr>
                 <td><code>documents</code></td>
                 <td>
-                  Required. An array of document <strong>metadata</strong> (<code>name</code>, <code>pages</code>).
-                  Do not send file contents.
+                  Required document <strong>metadata</strong>. Send <code>name</code> and <code>pages</code> for ordinary documents. For spreadsheets, send <code>name</code> and optional <code>estimated_non_empty_cells</code>. Do not send file contents.
                 </td>
               </tr>
               <tr>
@@ -2852,7 +3212,8 @@ export default function Home() {
           </table>
         </div>
         <pre><code>{`const documents = [
-  { name: "agreement.pdf", pages: 42 }
+  { name: "agreement.pdf", pages: 42 },
+  { name: "model.xlsx", estimated_non_empty_cells: 125000 }
 ];
 
 const pipeline = await loadSavedLumosProfile();
@@ -2873,6 +3234,10 @@ if (estimate.decision !== "allow") return stopForEstimateError(estimate);
 
 const result = await reducto.pipeline.run({ input, pipeline_id });`}</code></pre>
 
+        <p className="aside">
+          Spreadsheet API estimates use Lumos&apos;s $0.01-per-credit default. Consult your Reducto rate card.
+        </p>
+
         <p>
           The response includes the estimate, cost breakdown, usage, and a policy decision.
           Continue on <code>allow</code>, request approval on <code>review</code>, and stop on
@@ -2892,7 +3257,7 @@ const result = await reducto.pipeline.run({ input, pipeline_id });`}</code></pre
               <h3>Response preview</h3>
               {isCustomRateCard && (
                 <p className="aside">
-                  The API preview uses public rates; simulator rate edits are excluded.
+                  The API preview uses default rates; simulator rate edits are excluded.
                 </p>
               )}
               <pre><code>{JSON.stringify(apiResponse, null, 2)}</code></pre>
@@ -2904,9 +3269,10 @@ const result = await reducto.pipeline.run({ input, pipeline_id });`}</code></pre
       <section id="verify">
         <h2>Verify with Reducto</h2>
         <p>
-          This optional test uploads the real files to Reducto, runs your deployed pipeline once per
-          document, and returns Reducto&apos;s actual usage response without Lumos saving your API key
-          or extracted document contents; because it starts paid work, the form asks you to confirm first.
+          This optional test uploads the real non-spreadsheet files to Reducto, runs your deployed
+          pipeline once per document, and returns Reducto&apos;s actual usage response without Lumos
+          saving your API key or extracted document contents; because it starts paid work, the form
+          asks you to confirm first. Spreadsheet files are not uploaded or verified here.
         </p>
         <details>
           <summary>Open the paid verification form</summary>
@@ -2955,6 +3321,7 @@ const result = await reducto.pipeline.run({ input, pipeline_id });`}</code></pre
           <summary aria-label={`Lumos version ${packageJson.version}; show release history`}>
             {`v${packageJson.version}`}
           </summary>
+          <p><strong>v0.1.35</strong> — Added spreadsheet cell pricing.</p>
           <p><strong>v0.1.34</strong> — Added parsing add-on pricing.</p>
           <p><strong>v0.1.33</strong> — Added r‑1 Beta pricing.</p>
         </details>

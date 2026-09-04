@@ -994,3 +994,182 @@ test("unchanged divergent nested Parse configs and bundled auto priority remain 
     configurations.split.parsing.enhance.agentic,
   );
 });
+
+test("manual spreadsheet settings map and hydrate for standalone Parse", async () => {
+  const {
+    DEFAULT_MANUAL_PIPELINE_DRAFT,
+    manualDraftToPipeline,
+    pipelineToManualDraft,
+  } = await loadManualPipeline();
+  const draft = clone(DEFAULT_MANUAL_PIPELINE_DRAFT);
+  draft.extract.mode = "off";
+  draft.parse.enabled = true;
+  draft.parse.spreadsheet = {
+    configured: true,
+    clustering: "fast",
+    maxCellCount: "250000",
+  };
+
+  const result = manualDraftToPipeline(draft);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.pipeline.parse.spreadsheet, {
+    clustering: "fast",
+    max_cell_count: 250000,
+  });
+  assert.deepEqual(result.configurations.parse.spreadsheet, {
+    clustering: "fast",
+    max_cell_count: 250000,
+  });
+
+  const hydrated = pipelineToManualDraft(result.pipeline, result.configurations);
+  assert.deepEqual(hydrated.parse.spreadsheet, {
+    configured: true,
+    clustering: "fast",
+    maxCellCount: "250000",
+  });
+});
+
+test("reviewing imported Extract spreadsheet settings preserves neutral Reducto fields", async () => {
+  const { manualDraftToPipeline, pipelineToManualDraft } = await loadManualPipeline();
+  const configurations = {
+    parse: null,
+    classify: null,
+    extract: {
+      settings: { deep_extract: false },
+      parsing: {
+        spreadsheet: {
+          clustering: "disabled",
+          max_cell_count: 500000,
+          include: ["formula", "cell_colors"],
+          exclude: ["hidden_sheets"],
+          split_large_tables: { enabled: true, size: 100 },
+        },
+      },
+    },
+    split: null,
+    edit: null,
+  };
+  const pipeline = {
+    parse: null,
+    extract: {
+      settings: { deep_extract: false },
+      parsing: {
+        spreadsheet: { clustering: "disabled", max_cell_count: 500000 },
+      },
+    },
+    lumos_assumptions: { estimated_extract_fields_per_page: 24 },
+  };
+
+  const draft = pipelineToManualDraft(pipeline, configurations);
+  assert.deepEqual(draft.extract.spreadsheet, {
+    configured: true,
+    clustering: "disabled",
+    maxCellCount: "500000",
+  });
+  draft.extract.spreadsheet.clustering = "fast";
+  const reapplied = manualDraftToPipeline(draft);
+  assert.equal(reapplied.ok, true);
+  assert.deepEqual(reapplied.pipeline.extract.parsing.spreadsheet, {
+    clustering: "fast",
+    max_cell_count: 500000,
+  });
+  assert.deepEqual(reapplied.configurations.extract.parsing.spreadsheet.include, [
+    "formula",
+    "cell_colors",
+  ]);
+  assert.deepEqual(reapplied.configurations.extract.parsing.spreadsheet.exclude, [
+    "hidden_sheets",
+  ]);
+  assert.deepEqual(
+    reapplied.configurations.extract.parsing.spreadsheet.split_large_tables,
+    { enabled: true, size: 100 },
+  );
+});
+
+test("bundled imported Parse spreadsheet settings transfer to Extract without changing cost", async () => {
+  const { manualDraftToPipeline, pipelineToManualDraft } = await loadManualPipeline();
+  const { estimatePipeline, normalizeRequest } = await loadTypeScriptModule("../lib/pricing.ts");
+  const configurations = {
+    parse: {
+      spreadsheet: {
+        clustering: "fast",
+        max_cell_count: 200000,
+        include: ["formula"],
+      },
+    },
+    classify: null,
+    extract: { settings: { deep_extract: false } },
+    split: null,
+    edit: null,
+  };
+  const pipeline = {
+    parse: { spreadsheet: { clustering: "fast", max_cell_count: 200000 } },
+    extract: { settings: { deep_extract: false } },
+  };
+  const documents = [{ name: "model.xlsx", estimated_non_empty_cells: 100000 }];
+
+  const before = estimatePipeline(normalizeRequest({ documents, pipeline }));
+  const draft = pipelineToManualDraft(pipeline, configurations);
+  assert.equal(draft.parse.enabled, false);
+  assert.equal(draft.parse.includedDownstream, true);
+  assert.deepEqual(draft.extract.spreadsheet, {
+    configured: true,
+    clustering: "fast",
+    maxCellCount: "200000",
+  });
+  const reapplied = manualDraftToPipeline(draft);
+  assert.equal(reapplied.ok, true);
+  const after = estimatePipeline(
+    normalizeRequest({ documents, pipeline: reapplied.pipeline }),
+  );
+  assert.equal(after.spreadsheetCost, before.spreadsheetCost);
+  assert.deepEqual(reapplied.pipeline.extract.parsing.spreadsheet, {
+    clustering: "fast",
+    max_cell_count: 200000,
+  });
+  assert.deepEqual(reapplied.configurations.parse.spreadsheet.include, ["formula"]);
+});
+
+test("manual spreadsheet limits use plain-language validation", async () => {
+  const { DEFAULT_MANUAL_PIPELINE_DRAFT, manualDraftToPipeline } =
+    await loadManualPipeline();
+  for (const value of ["-1", "1.5", String(Number.MAX_SAFE_INTEGER + 1)]) {
+    const draft = clone(DEFAULT_MANUAL_PIPELINE_DRAFT);
+    draft.extract.spreadsheet = {
+      configured: true,
+      clustering: "accurate",
+      maxCellCount: value,
+    };
+    const result = manualDraftToPipeline(draft);
+    assert.equal(result.ok, false);
+    assert.match(
+      result.errors["extract.spreadsheet.maxCellCount"],
+      /whole maximum cell count.*0 or greater/i,
+    );
+  }
+});
+
+test("reapplying the builder drops computed spreadsheet exclusions instead of making them stale", async () => {
+  const { manualDraftToPipeline, pipelineToManualDraft } = await loadManualPipeline();
+  const pipeline = {
+    parse: { spreadsheet: { clustering: "accurate" } },
+    extract: null,
+    split: null,
+    lumos_assumptions: {
+      unpriced_cost_factors: [
+        "spreadsheet.non_empty_cell_count",
+        "spreadsheet.parse.advanced_chart",
+        "spreadsheet.vendor_surcharge",
+        "customer_specific_unknown",
+      ],
+    },
+  };
+
+  const draft = pipelineToManualDraft(pipeline);
+  const reapplied = manualDraftToPipeline(draft);
+  assert.equal(reapplied.ok, true);
+  assert.deepEqual(reapplied.pipeline.lumos_assumptions.unpriced_cost_factors, [
+    "spreadsheet.vendor_surcharge",
+    "customer_specific_unknown",
+  ]);
+});

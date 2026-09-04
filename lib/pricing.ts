@@ -6,6 +6,7 @@ export type SplitMode = "none" | "standard" | "deep";
 export type Decision = "allow" | "review" | "deny";
 export type PricedParsingEndpoint = "parse" | "extract" | "split";
 export type EndpointInputKind = "document" | "jobid";
+export type SpreadsheetClustering = "accurate" | "fast" | "disabled";
 
 export type PublicPageRange =
   | { start: number; end: number }
@@ -28,6 +29,8 @@ export type PricingDocument = {
   pages: number;
   route: RouteMode;
   isPdf: boolean;
+  isSpreadsheet: boolean;
+  estimatedNonEmptyCells: number | null;
 };
 
 export type PipelinePricingConfig = {
@@ -52,6 +55,8 @@ export type PipelinePricingConfig = {
   splitAddOns: EndpointParsingAddOns;
   edit: boolean;
   fullyPrefilledEditPages: number;
+  spreadsheetClustering: SpreadsheetClustering;
+  spreadsheetMaxCellCount: number | null;
   unpricedCostFactors: string[];
 };
 
@@ -76,6 +81,12 @@ type PublicParsingConfiguration = {
     page_range?: PublicPageRange | null;
     return_ocr_data?: boolean;
   } | null;
+  spreadsheet?: PublicSpreadsheetConfiguration | null;
+};
+
+export type PublicSpreadsheetConfiguration = {
+  clustering?: SpreadsheetClustering;
+  max_cell_count?: number | null;
 };
 
 export type PublicPipeline = {
@@ -88,6 +99,7 @@ export type PublicPipeline = {
       model?: ParsePricingModel;
       return_ocr_data?: boolean;
     } | null;
+    spreadsheet?: PublicSpreadsheetConfiguration | null;
     queue_priority?: "auto" | "batch";
   } | null;
   classify?: {
@@ -127,8 +139,12 @@ export type PublicPipeline = {
   } | null;
 };
 
+export type PublicEstimateDocument =
+  | { name: string; pages: number; assumed_extract_route?: RouteMode }
+  | { name: string; estimated_non_empty_cells?: number };
+
 export type PublicEstimateRequest = {
-  documents: Array<{ name: string; pages: number; assumed_extract_route?: RouteMode }>;
+  documents: PublicEstimateDocument[];
   pipeline: PublicPipeline;
   policy?: { max_total_usd?: number };
   processing_context?: {
@@ -154,6 +170,7 @@ export type PricingUnitRates = {
   deepSplit: number;
   edit: number;
   editPrefilled: number;
+  spreadsheetCredit: number;
 };
 
 export const DEFAULT_PRICING_UNIT_RATES: PricingUnitRates = Object.freeze({
@@ -170,6 +187,7 @@ export const DEFAULT_PRICING_UNIT_RATES: PricingUnitRates = Object.freeze({
   deepSplit: 0.04,
   edit: 0.06,
   editPrefilled: 0.015,
+  spreadsheetCredit: 0.01,
 });
 
 export const FIXED_PRICING_RULES = Object.freeze({
@@ -258,8 +276,9 @@ function samePageIntervals(
   );
 }
 
-function isSpreadsheet(name: string) {
-  return /\.(?:xls|xlsx|xlsm|xltx|xltm|csv|qpw)(?:[?#].*)?$/i.test(name);
+export function isSpreadsheetFilename(name: string) {
+  const path = name.split(/[?#]/, 1)[0] ?? name;
+  return /\.(?:xls|xlsx|xlsm|xltx|xltm|csv|qpw)$/i.test(path);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -331,6 +350,34 @@ function finiteNumber(
     );
   }
   return resolved;
+}
+
+function inspectSpreadsheetConfiguration(
+  configuration: Record<string, unknown>,
+  label: string,
+) {
+  rejectUnknownKeys(configuration, ["clustering", "max_cell_count"], label);
+  const rawClustering = configuration.clustering;
+  if (
+    rawClustering !== undefined &&
+    rawClustering !== "accurate" &&
+    rawClustering !== "fast" &&
+    rawClustering !== "disabled"
+  ) {
+    throw new Error(`${label}.clustering must be "accurate", "fast", or "disabled".`);
+  }
+  const rawMaxCellCount = configuration.max_cell_count;
+  const maxCellCount =
+    rawMaxCellCount == null
+      ? null
+      : finiteNumber(rawMaxCellCount, 0, `${label}.max_cell_count`, {
+          minimum: 0,
+          safeInteger: true,
+        });
+  return {
+    clustering: (rawClustering ?? "accurate") as SpreadsheetClustering,
+    maxCellCount,
+  };
 }
 
 function inspectParsingAddOns(
@@ -448,7 +495,7 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
   if (parse) {
     rejectUnknownKeys(
       parse,
-      ["enhance", "settings", "queue_priority"],
+      ["enhance", "settings", "spreadsheet", "queue_priority"],
       "pipeline.parse",
     );
   }
@@ -484,6 +531,9 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
   const parseSettings = parse
     ? (optionalRecord(parse, "settings", "pipeline.parse.settings") ?? {})
     : {};
+  const parseSpreadsheet = parse
+    ? optionalRecord(parse, "spreadsheet", "pipeline.parse.spreadsheet")
+    : null;
   const extractSettings = extract
     ? (optionalRecord(extract, "settings", "pipeline.extract.settings") ?? {})
     : {};
@@ -504,6 +554,13 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
         "pipeline.extract.parsing.settings",
       ) ?? {})
     : {};
+  const extractSpreadsheet = extractParsing
+    ? optionalRecord(
+        extractParsing,
+        "spreadsheet",
+        "pipeline.extract.parsing.spreadsheet",
+      )
+    : null;
   const splitSettings = split
     ? (optionalRecord(split, "settings", "pipeline.split.settings") ?? {})
     : {};
@@ -524,6 +581,13 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
         "pipeline.split.parsing.enhance",
       ) ?? {})
     : {};
+  const splitSpreadsheet = splitParsing
+    ? optionalRecord(
+        splitParsing,
+        "spreadsheet",
+        "pipeline.split.parsing.spreadsheet",
+      )
+    : null;
   rejectUnknownKeys(parseEnhance, ["agentic"], "pipeline.parse.enhance");
   rejectUnknownKeys(
     parseSettings,
@@ -537,10 +601,18 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
   );
   rejectUnknownKeys(splitSettings, ["deep_split"], "pipeline.split.settings");
   if (splitParsing) {
-    rejectUnknownKeys(splitParsing, ["enhance", "settings"], "pipeline.split.parsing");
+    rejectUnknownKeys(
+      splitParsing,
+      ["enhance", "settings", "spreadsheet"],
+      "pipeline.split.parsing",
+    );
   }
   if (extractParsing) {
-    rejectUnknownKeys(extractParsing, ["enhance", "settings"], "pipeline.extract.parsing");
+    rejectUnknownKeys(
+      extractParsing,
+      ["enhance", "settings", "spreadsheet"],
+      "pipeline.extract.parsing",
+    );
   }
   rejectUnknownKeys(
     extractParsingSettings,
@@ -689,6 +761,57 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
   if (parseQueuePriority === "batch" && parseMode !== "standalone") {
     throw new Error("Parse queue_priority is available only for standalone Parse estimates.");
   }
+
+  const normalizedParseSpreadsheet = parseSpreadsheet
+    ? inspectSpreadsheetConfiguration(parseSpreadsheet, "pipeline.parse.spreadsheet")
+    : null;
+  const normalizedExtractSpreadsheet = extractSpreadsheet
+    ? inspectSpreadsheetConfiguration(
+        extractSpreadsheet,
+        "pipeline.extract.parsing.spreadsheet",
+      )
+    : null;
+  const normalizedSplitSpreadsheet = splitSpreadsheet
+    ? inspectSpreadsheetConfiguration(
+        splitSpreadsheet,
+        "pipeline.split.parsing.spreadsheet",
+      )
+    : null;
+  const sameSpreadsheetConfiguration = (
+    left: { clustering: SpreadsheetClustering; maxCellCount: number | null },
+    right: { clustering: SpreadsheetClustering; maxCellCount: number | null },
+  ) =>
+    left.clustering === right.clustering && left.maxCellCount === right.maxCellCount;
+  if (
+    parseMode === "bundled" &&
+    normalizedParseSpreadsheet &&
+    ((normalizedExtractSpreadsheet &&
+      !sameSpreadsheetConfiguration(
+        normalizedParseSpreadsheet,
+        normalizedExtractSpreadsheet,
+      )) ||
+      (normalizedSplitSpreadsheet &&
+        !sameSpreadsheetConfiguration(
+          normalizedParseSpreadsheet,
+          normalizedSplitSpreadsheet,
+        )))
+  ) {
+    throw new Error(
+      "Bundled Parse spreadsheet settings conflict with the downstream endpoint settings.",
+    );
+  }
+  const spreadsheetConfiguration =
+    parseMode === "standalone"
+      ? normalizedParseSpreadsheet
+      : extract != null
+        ? normalizedExtractSpreadsheet ?? normalizedParseSpreadsheet
+        : split != null
+          ? normalizedSplitSpreadsheet ?? normalizedParseSpreadsheet
+          : null;
+  const effectiveSpreadsheetConfiguration = spreadsheetConfiguration ?? {
+    clustering: "accurate" as const,
+    maxCellCount: null,
+  };
 
   const hasParseComplexShare = Object.hasOwn(
     assumptions,
@@ -915,6 +1038,33 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
 
   const documents = rawDocuments.map((rawDocument) => {
     if (!isRecord(rawDocument)) throw new Error("Every document must be an object.");
+    const rawName = rawDocument.name;
+    if (typeof rawName !== "string" || !rawName.trim()) {
+      throw new Error("Every document needs a nonempty original filename.");
+    }
+    const name = rawName.trim();
+    if (isSpreadsheetFilename(name)) {
+      rejectUnknownKeys(rawDocument, ["name", "estimated_non_empty_cells"], "Spreadsheet");
+      const rawCellCount = rawDocument.estimated_non_empty_cells;
+      const estimatedNonEmptyCells =
+        rawCellCount === undefined
+          ? null
+          : finiteNumber(
+              rawCellCount,
+              0,
+              `Spreadsheet ${name} estimated_non_empty_cells`,
+              { minimum: 0, safeInteger: true },
+            );
+      return {
+        name,
+        pages: 0,
+        route: "unknown" as const,
+        isPdf: false,
+        isSpreadsheet: true,
+        estimatedNonEmptyCells,
+      };
+    }
+
     rejectUnknownKeys(
       rawDocument,
       ["name", "pages", "assumed_extract_route"],
@@ -924,11 +1074,6 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
     if (typeof pages !== "number" || !Number.isSafeInteger(pages) || pages < 1) {
       throw new Error("Every document needs a whole-number page count of at least 1.");
     }
-    const rawName = rawDocument.name;
-    if (typeof rawName !== "string" || !rawName.trim()) {
-      throw new Error("Every document needs a nonempty original filename.");
-    }
-    const name = rawName.trim();
     const rawRoute =
       rawDocument.assumed_extract_route === undefined
         ? "unknown"
@@ -937,15 +1082,54 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
       throw new Error(`Unknown document route: ${String(rawRoute)}`);
     }
     const route: RouteMode = rawRoute;
-    return { name, pages, route, isPdf: /\.pdf(?:[?#].*)?$/i.test(name) };
+    return {
+      name,
+      pages,
+      route,
+      isPdf: /\.pdf$/i.test(name.split(/[?#]/, 1)[0] ?? name),
+      isSpreadsheet: false,
+      estimatedNonEmptyCells: null,
+    };
   });
 
-  if (documents.some((document) => isSpreadsheet(document.name))) {
-    throw new Error(
-      "Spreadsheet pricing needs billable cell counts and your Reducto rate card; Lumos will not guess a page-based price.",
+  const spreadsheetLimits = [
+    ...(parseMode === "standalone" ||
+    (parseMode === "bundled" &&
+      ((extract != null && extractInputKind !== "jobid") ||
+        (split != null && splitInputKind !== "jobid")))
+      ? [normalizedParseSpreadsheet?.maxCellCount]
+      : []),
+    ...(extract != null && extractInputKind !== "jobid"
+      ? [normalizedExtractSpreadsheet?.maxCellCount]
+      : []),
+    ...(split != null && splitInputKind !== "jobid"
+      ? [normalizedSplitSpreadsheet?.maxCellCount]
+      : []),
+  ].filter((limit): limit is number => limit !== null && limit !== undefined);
+  for (const limit of spreadsheetLimits) {
+    const overLimit = documents.find(
+      (document) =>
+        document.isSpreadsheet &&
+        document.estimatedNonEmptyCells !== null &&
+        document.estimatedNonEmptyCells > limit,
     );
+    if (overLimit) {
+      throw new Error(
+        `${overLimit.name} has ${overLimit.estimatedNonEmptyCells} estimated non-empty cells, exceeding spreadsheet.max_cell_count (${limit}). Reducto would reject this file before processing.`,
+      );
+    }
   }
   const totalDocumentPages = documents.reduce((sum, document) => sum + document.pages, 0);
+  const spreadsheetDocuments = documents.filter((document) => document.isSpreadsheet);
+  const hasSpreadsheetDocuments = spreadsheetDocuments.length > 0;
+  const hasOrdinaryDocuments = documents.some((document) => !document.isSpreadsheet);
+  const totalEstimatedSpreadsheetCells = spreadsheetDocuments.reduce(
+    (sum, document) => sum + (document.estimatedNonEmptyCells ?? 0),
+    0,
+  );
+  if (!Number.isSafeInteger(totalEstimatedSpreadsheetCells)) {
+    throw new Error("The combined spreadsheet cell count is too large to estimate safely.");
+  }
   if (!Number.isSafeInteger(totalDocumentPages)) {
     throw new Error("The combined document page count is too large to estimate safely.");
   }
@@ -1025,12 +1209,73 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
     },
   );
   if (includeImages === true) unpricedCostFactors.push("extract.include_images");
-  if (hasExtract && (!hasEstimatedFields || fieldsPerPage > 100)) {
+  if (hasExtract && hasOrdinaryDocuments && (!hasEstimatedFields || fieldsPerPage > 100)) {
     unpricedCostFactors.push("extract.field_density");
   }
   for (const endpoint of ["parse", "extract", "split"] as const) {
     if (chartEnabledByEndpoint[endpoint] && chartCountsByEndpoint[endpoint] == null) {
       unpricedCostFactors.push(`${endpoint}.advanced_chart_count`);
+    }
+  }
+  if (hasSpreadsheetDocuments) {
+    if (
+      spreadsheetDocuments.some(
+        (document) => document.estimatedNonEmptyCells === null,
+      )
+    ) {
+      unpricedCostFactors.push("spreadsheet.non_empty_cell_count");
+    }
+    if (
+      parseMode !== "standalone" &&
+      !hasExtract &&
+      !(split != null && splitInputKind === "jobid")
+    ) {
+      unpricedCostFactors.push("spreadsheet.base_processing");
+    }
+    if (classify != null) unpricedCostFactors.push("spreadsheet.classify");
+    if (split != null) unpricedCostFactors.push("spreadsheet.split");
+    if (edit != null) unpricedCostFactors.push("spreadsheet.edit");
+
+    const addSpreadsheetAddOnFactors = (
+      endpoint: PricedParsingEndpoint,
+      addOns: { returnOcrData: boolean; promptedBlocks: boolean; advancedChart: boolean },
+    ) => {
+      if (addOns.returnOcrData) {
+        unpricedCostFactors.push(`spreadsheet.${endpoint}.return_ocr_data`);
+      }
+      if (addOns.promptedBlocks) {
+        unpricedCostFactors.push(`spreadsheet.${endpoint}.prompted_processing`);
+      }
+      if (addOns.advancedChart) {
+        unpricedCostFactors.push(`spreadsheet.${endpoint}.advanced_chart`);
+      }
+    };
+    if (parseMode === "standalone") {
+      addSpreadsheetAddOnFactors("parse", {
+        returnOcrData: parseReturnOcrData === true,
+        promptedBlocks: parseHasCustomPrompt || promptedAssumption("parse"),
+        advancedChart: chartEnabledByEndpoint.parse,
+      });
+    }
+    if (hasExtract) {
+      addSpreadsheetAddOnFactors("extract", {
+        returnOcrData:
+          extractInputKind !== "jobid" && extractParsingAddOns.returnOcrData,
+        promptedBlocks:
+          extractInputKind !== "jobid" &&
+          (extractParsingAddOns.promptedBlocks || promptedAssumption("extract")),
+        advancedChart: chartEnabledByEndpoint.extract,
+      });
+    }
+    if (split != null) {
+      addSpreadsheetAddOnFactors("split", {
+        returnOcrData:
+          splitInputKind !== "jobid" && splitParsingAddOns.returnOcrData,
+        promptedBlocks:
+          splitInputKind !== "jobid" &&
+          (splitParsingAddOns.promptedBlocks || promptedAssumption("split")),
+        advancedChart: chartEnabledByEndpoint.split,
+      });
     }
   }
 
@@ -1144,6 +1389,8 @@ export function normalizeRequest(input: PublicEstimateRequest): EstimateInput {
       },
       edit: edit != null,
       fullyPrefilledEditPages,
+      spreadsheetClustering: effectiveSpreadsheetConfiguration.clustering,
+      spreadsheetMaxCellCount: effectiveSpreadsheetConfiguration.maxCellCount,
       unpricedCostFactors: [...new Set(unpricedCostFactors.map((factor) => factor.trim()))],
     },
     budgetUsd,
@@ -1154,11 +1401,40 @@ export function estimatePipeline(
   { documents, pipeline, budgetUsd }: EstimateInput,
   rates: PricingUnitRates = DEFAULT_PRICING_UNIT_RATES,
 ) {
-  const totalPages = documents.reduce((sum, item) => sum + Math.max(1, item.pages), 0);
+  const ordinaryDocuments = documents.filter((document) => !document.isSpreadsheet);
+  const spreadsheetDocuments = documents.filter((document) => document.isSpreadsheet);
+  const totalPages = ordinaryDocuments.reduce((sum, item) => sum + item.pages, 0);
+  const spreadsheetCellsEstimated = spreadsheetDocuments.reduce(
+    (sum, document) => sum + (document.estimatedNonEmptyCells ?? 0),
+    0,
+  );
+  const spreadsheetDocumentsMissingCellCount = spreadsheetDocuments.filter(
+    (document) => document.estimatedNonEmptyCells === null,
+  ).length;
+  const spreadsheetCreditUnit =
+    pipeline.spreadsheetClustering === "accurate" ? 1_000 : 5_000;
+  const spreadsheetCredits = spreadsheetCellsEstimated / spreadsheetCreditUnit;
+  const spreadsheetBaseEndpoint =
+    pipeline.parseMode === "standalone"
+      ? ("parse" as const)
+      : pipeline.extractMode !== "none"
+        ? ("extract" as const)
+        : null;
+  const spreadsheetCreditRate =
+    typeof rates.spreadsheetCredit === "number" &&
+    Number.isFinite(rates.spreadsheetCredit) &&
+    rates.spreadsheetCredit >= 0
+      ? rates.spreadsheetCredit
+      : DEFAULT_PRICING_UNIT_RATES.spreadsheetCredit;
+  const spreadsheetCost =
+    spreadsheetDocuments.length === 0 || spreadsheetBaseEndpoint === null
+      ? 0
+      : spreadsheetCredits * spreadsheetCreditRate;
 
   let parsePages = 0;
   if (pipeline.parseMode === "standalone") {
     parsePages = documents.reduce((sum, document) => {
+      if (document.isSpreadsheet) return sum;
       if (pipeline.parsePageRanges == null) return sum + document.pages;
       const selectedPages = pipeline.parsePageRanges.reduce((rangeSum, range) => {
         if (range.start > document.pages) return rangeSum;
@@ -1189,10 +1465,10 @@ export function estimatePipeline(
     pipeline.parseModel === "r-1"
       ? parsePages * rates.parseR1
       : parsePages * rates.parseComplex * pipeline.parseCostMultiplier;
-  const parseChartLikely = pipeline.parseAddOns.advancedChart
+  const parseChartLikely = pipeline.parseAddOns.advancedChart && parsePages > 0
     ? (pipeline.parseAddOns.advancedChartCounts?.likely ?? 0)
     : 0;
-  const parseChartMaximum = pipeline.parseAddOns.advancedChart
+  const parseChartMaximum = pipeline.parseAddOns.advancedChart && parsePages > 0
     ? (pipeline.parseAddOns.advancedChartCounts?.maximum ?? 0)
     : 0;
   const parseOcrCost = pipeline.parseAddOns.returnOcrData
@@ -1213,6 +1489,7 @@ export function estimatePipeline(
   const classifyPages = pipeline.classify
     ? documents.reduce(
         (sum, item) => {
+          if (item.isSpreadsheet) return sum;
           // Reducto applies page_range only to PDFs. Other formats use the
           // documented default context of the first five available pages.
           if (!item.isPdf) return sum + Math.min(item.pages, 5);
@@ -1233,7 +1510,7 @@ export function estimatePipeline(
 
   const extractPageCounts = new Map<PricingDocument, number>();
   for (const document of documents) {
-    if (pipeline.extractMode === "none") {
+    if (pipeline.extractMode === "none" || document.isSpreadsheet) {
       extractPageCounts.set(document, 0);
       continue;
     }
@@ -1297,10 +1574,10 @@ export function estimatePipeline(
   const extractPromptedCost = pipeline.extractAddOns.promptedBlocks
     ? extractPages * rates.promptedBlocks
     : 0;
-  const extractChartLikely = pipeline.extractAddOns.advancedChart
+  const extractChartLikely = pipeline.extractAddOns.advancedChart && extractPages > 0
     ? (pipeline.extractAddOns.advancedChartCounts?.likely ?? 0)
     : 0;
-  const extractChartMaximum = pipeline.extractAddOns.advancedChart
+  const extractChartMaximum = pipeline.extractAddOns.advancedChart && extractPages > 0
     ? (pipeline.extractAddOns.advancedChartCounts?.maximum ?? 0)
     : 0;
   const extractFixedAddOns = extractOcrCost + extractPromptedCost;
@@ -1310,7 +1587,7 @@ export function estimatePipeline(
 
   const splitPageCounts = new Map<PricingDocument, number>();
   for (const document of documents) {
-    if (pipeline.splitMode === "none") {
+    if (pipeline.splitMode === "none" || document.isSpreadsheet) {
       splitPageCounts.set(document, 0);
       continue;
     }
@@ -1345,10 +1622,10 @@ export function estimatePipeline(
   const splitPromptedCost = pipeline.splitAddOns.promptedBlocks
     ? splitPages * rates.promptedBlocks
     : 0;
-  const splitChartLikely = pipeline.splitAddOns.advancedChart
+  const splitChartLikely = pipeline.splitAddOns.advancedChart && splitPages > 0
     ? (pipeline.splitAddOns.advancedChartCounts?.likely ?? 0)
     : 0;
-  const splitChartMaximum = pipeline.splitAddOns.advancedChart
+  const splitChartMaximum = pipeline.splitAddOns.advancedChart && splitPages > 0
     ? (pipeline.splitAddOns.advancedChartCounts?.maximum ?? 0)
     : 0;
   const splitFixedAddOns = splitOcrCost + splitPromptedCost;
@@ -1365,7 +1642,7 @@ export function estimatePipeline(
       (totalPages - fullyPrefilledEditPages) * rates.edit
     : 0;
 
-  const fixed = classifyCost + editCost;
+  const fixed = classifyCost + editCost + spreadsheetCost;
   const low = fixed + parseLow + extractLow + splitLow;
   const likely = fixed + parseLikely + extractLikely + splitLikely;
   const high = fixed + parseHigh + extractHigh + splitHigh;
@@ -1448,6 +1725,15 @@ export function estimatePipeline(
     splitHigh,
     splitCost,
     editCost,
+    spreadsheetDocuments: spreadsheetDocuments.length,
+    spreadsheetCellsEstimated,
+    spreadsheetDocumentsMissingCellCount,
+    spreadsheetCredits,
+    spreadsheetClustering: pipeline.spreadsheetClustering,
+    spreadsheetMaxCellCount: pipeline.spreadsheetMaxCellCount,
+    spreadsheetBaseEndpoint,
+    spreadsheetCreditRate,
+    spreadsheetCost,
     low,
     likely,
     high,
